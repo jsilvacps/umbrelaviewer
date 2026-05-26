@@ -1,0 +1,7 @@
+// Umbrela Viewer — Win32 Resources
+// The icon file is generated at build time by tools/gen_icon.cpp
+
+#include <winres.h>
+
+// IDI_APPICON = 1  (referenced in main.cpp via MAKEINTRESOURCE(1))
+1 ICON "../assets/umbrelaviewer.ico"

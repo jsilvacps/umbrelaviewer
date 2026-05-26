@@ -2139,9 +2139,13 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     BOOL dark=TRUE;
     DwmSetWindowAttribute(g_mainWnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
 
-    // Icons
-    HICON ico32=CreateAppIcon(32),ico16=CreateAppIcon(16);
-    SendMessage(g_mainWnd,WM_SETICON,ICON_BIG,(LPARAM)ico32);
+    // Icons — load from embedded resource (gives Explorer the correct file icon).
+    // Fall back to the GDI+ generator if the resource isn't available.
+    HICON ico32 = (HICON)LoadImage(hInst, MAKEINTRESOURCE(1), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    HICON ico16 = (HICON)LoadImage(hInst, MAKEINTRESOURCE(1), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
+    if (!ico32) ico32 = CreateAppIcon(32);
+    if (!ico16) ico16 = CreateAppIcon(16);
+    SendMessage(g_mainWnd,WM_SETICON,ICON_BIG,  (LPARAM)ico32);
     SendMessage(g_mainWnd,WM_SETICON,ICON_SMALL,(LPARAM)ico16);
 
     // Address bar edit control (floats on top of the drawn box)

@@ -26,14 +26,16 @@ RequestExecutionLevel user
 !include "MUI2.nsh"
 !include "WinMessages.nsh"
 
+; Ícone do instalador e desinstalador (gerado em build time)
+!define MUI_ICON   "..\assets\umbrelaviewer.ico"
+!define MUI_UNICON "..\assets\umbrelaviewer.ico"
+
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE    "Bem-vindo ao Umbrela Viewer ${APP_VERSION}"
 !define MUI_WELCOMEPAGE_TEXT     "Este assistente instalará o Umbrela Viewer no seu computador.$\r$\n$\r$\nO programa será instalado na sua conta de usuário — nenhuma senha de administrador é necessária.$\r$\n$\r$\nClique em Avançar para continuar."
 !define MUI_FINISHPAGE_RUN       "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT  "Iniciar Umbrela Viewer agora"
 
-; Ícone do instalador (usa o próprio EXE como ícone — NSIS extrai automaticamente)
-; !define MUI_ICON "..\dist\${APP_EXE}"   ; descomente se quiser usar o ícone do EXE
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY

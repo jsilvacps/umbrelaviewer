@@ -48,7 +48,12 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build\UmbrelaViewer.exe dist\ -Force
 
-      # 7. Build NSIS installer
+      # 7. Copy generated icon to dist/ (optional artifact)
+      - name: Stage icon
+        shell: pwsh
+        run: Copy-Item assets\umbrelaviewer.ico dist\ -Force -ErrorAction SilentlyContinue
+
+      # 8. Build NSIS installer
       - name: Build Installer
         run: makensis installer\UmbrelaViewer.nsi
 
