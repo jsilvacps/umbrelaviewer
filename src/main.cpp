@@ -124,9 +124,10 @@ namespace C {
 #define VB_SESSION_0   10  // recent-session cards: 10..17 (up to 8)
 #define VB_INSTALL_NOW  9  // "Instalar para todos os usuários" card button
 #define VB_SVC_TOGGLE  18  // service card: install / stop service
+#define VB_OPEN_PORT   19  // firewall card: liberar porta 7890
 
 struct VBtn { RECT rc; int id; };
-static VBtn  g_btns[24] = {};
+static VBtn  g_btns[28] = {};
 static int   g_nbtns    = 0;
 static int   g_hotBtn  = 0;
 static int   g_dnBtn   = 0;
@@ -607,6 +608,57 @@ static void HostAcceptThread(){
     }
 }
 
+// ─── Firewall: abre porta 7890 para conexões de entrada ──────────────────────
+// Idempotente: verifica flag no registro antes de rodar netsh.
+// Funciona automaticamente quando rodando como LocalSystem (serviço) ou admin.
+// Falha silenciosamente como usuário padrão — sem UAC, sem janela.
+static void AddFirewallRuleSilent() {
+    // Já foi feito antes?
+    DWORD val = 0, sz = sizeof(val);
+    if (RegGetValueA(HKEY_CURRENT_USER, "Software\\UmbrelaViewer", "FWRule7890",
+                     RRF_RT_REG_DWORD, nullptr, &val, &sz) == ERROR_SUCCESS && val)
+        return;
+
+    char sys[MAX_PATH]; GetSystemDirectoryA(sys, MAX_PATH);
+    std::string netsh = std::string(sys) + "\\netsh.exe";
+
+    // Parâmetros como buffer mutável (CreateProcess exige isso)
+    char args[] =
+        "netsh advfirewall firewall add rule "
+        "name=\"Umbrela Viewer\" dir=in action=allow "
+        "protocol=TCP localport=7890 profile=any";
+
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessA(netsh.c_str(), args, nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return;
+    WaitForSingleObject(pi.hProcess, 8000);
+    DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    if (code == 0) {
+        DWORD one = 1;
+        RegSetKeyValueA(HKEY_CURRENT_USER, "Software\\UmbrelaViewer",
+                        "FWRule7890", REG_DWORD, &one, sizeof(DWORD));
+    }
+}
+
+static void RemoveFirewallRule() {
+    char sys[MAX_PATH]; GetSystemDirectoryA(sys, MAX_PATH);
+    std::string netsh = std::string(sys) + "\\netsh.exe";
+    char args[] = "netsh advfirewall firewall delete rule name=\"Umbrela Viewer\"";
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessA(netsh.c_str(), args, nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    }
+    RegDeleteKeyValueA(HKEY_CURRENT_USER, "Software\\UmbrelaViewer", "FWRule7890");
+}
+
 static bool StartHosting(){
     g_srvSock=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
     if(g_srvSock==INVALID_SOCKET) return false;
@@ -618,6 +670,8 @@ static bool StartHosting(){
     }
     g_srvRunning=true;
     std::thread(HostAcceptThread).detach();
+    // Abre porta no firewall em background (silencioso — sem janela, sem UAC)
+    std::thread(AddFirewallRuleSilent).detach();
     return true;
 }
 static void StopHosting(){
@@ -1129,6 +1183,8 @@ static bool InstallServiceNow() {
         ok = (GetLastError() == ERROR_SERVICE_EXISTS); // already installed = success
     }
     CloseServiceHandle(hscm);
+    // Abre porta 7890 no firewall (este processo tem direitos de admin)
+    if (ok) AddFirewallRuleSilent();
     return ok;
 }
 
@@ -1159,7 +1215,7 @@ static bool UninstallServiceNow() {
 // the given flag as a child process via CreateProcessWithLogonW — no UAC
 // secure-desktop, fully visible inside a remote session.
 //
-// flag         : "/install-all", "/install-service", "/uninstall-service"
+// flag         : "/install-all", "/install-service", "/uninstall-service", "/add-firewall"
 // dlgTitle     : dialog title (wide)
 // prompt       : one-line description shown in the dialog
 // successMsg   : shown to the user when exit code == 0
@@ -1321,6 +1377,14 @@ static void DoUninstallService() {
         L"Umbrela Viewer — Remover Serviço Windows",
         L"Remover o serviço do sistema (requer conta de administrador).",
         L"Serviço removido com sucesso.");
+}
+static void DoOpenFirewallPort() {
+    ShowAdminCredAndRun(g_mainWnd,
+        "/add-firewall",
+        L"Umbrela Viewer — Liberar Porta no Firewall",
+        L"Libera a porta 7890 no Firewall do Windows para que o técnico consiga conectar.\n"
+        L"Digite as credenciais de administrador:",
+        L"Porta 7890 liberada!\n\nO técnico já pode conectar usando o IP e a senha acima.");
 }
 
 // ─── App icon — UV monitor badge ─────────────────────────────────────────────
@@ -1754,6 +1818,66 @@ static void PaintMain(HWND hw, HDC hdc){
                     Gdiplus::RectF(sbX,sbY,124.f,26.f),&sfSB,&sbTxt);
                 VBAdd(VB_SVC_TOGGLE,(int)sbX,(int)sbY,124,26);
             }
+
+            // ── Firewall card ─────────────────────────────────────────────
+            {
+                // svcOffY + 64 (card height) + 10 (gap)
+                float fwOffY = notInstalled ? cy+cardH+10.f+76.f+10.f+64.f+10.f+64.f+10.f
+                                            : cy+cardH+10.f+76.f+10.f+64.f+10.f;
+                float fwW=(float)(W-24);
+
+                // Detect if the port rule is registered
+                DWORD fwVal=0, fwSz=sizeof(fwVal);
+                bool fwDone = (RegGetValueA(HKEY_CURRENT_USER,"Software\\UmbrelaViewer","FWRule7890",
+                               RRF_RT_REG_DWORD,nullptr,&fwVal,&fwSz)==ERROR_SUCCESS && fwVal);
+
+                Gdiplus::Color fwBdrCol = fwDone
+                    ? Gdiplus::Color(140,16,185,129)   // green — open
+                    : Gdiplus::Color(140,245,158,11);  // yellow — not confirmed
+
+                Gdiplus::SolidBrush fwBg(Gdiplus::Color(255,17,24,39));
+                FillRR(g,12.f,fwOffY,fwW,58.f,12.f,fwBg);
+                Gdiplus::Pen fwPen(fwBdrCol,1.f);
+                StrokeRR(g,12.f,fwOffY,fwW,58.f,12.f,fwPen);
+
+                // Status dot
+                Gdiplus::Color fwDot = fwDone
+                    ? Gdiplus::Color(255,16,185,129)
+                    : Gdiplus::Color(255,245,158,11);
+                Gdiplus::SolidBrush fwDotGlow(Gdiplus::Color(60,
+                    fwDot.GetR(),fwDot.GetG(),fwDot.GetB()));
+                float fdcx=26.f, fdcy=fwOffY+29.f;
+                g.FillEllipse(&fwDotGlow,fdcx-10.f,fdcy-10.f,20.f,20.f);
+                Gdiplus::SolidBrush fwDotBr(fwDot);
+                g.FillEllipse(&fwDotBr,fdcx-6.f,fdcy-6.f,12.f,12.f);
+
+                // Labels
+                g.DrawString(L"Firewall — Porta 7890",-1,&fntBold,
+                    Gdiplus::PointF(44.f,fwOffY+8.f),&wBrush);
+                const wchar_t* fwLbl = fwDone
+                    ? L"Porta aberta — conexões externas permitidas"
+                    : L"Porta não confirmada — clique para liberar";
+                Gdiplus::SolidBrush fwLblBr(fwDot);
+                g.DrawString(fwLbl,-1,&fntTiny,
+                    Gdiplus::PointF(44.f,fwOffY+30.f),&fwLblBr);
+
+                // Button
+                bool fwBtnHot=(g_hotBtn==VB_OPEN_PORT);
+                const wchar_t* fwBtnLbl = fwDone ? L"Verificar novamente" : L"Liberar porta →";
+                Gdiplus::Color fb1=fwBtnHot?Gdiplus::Color(255,234,179,8):Gdiplus::Color(200,202,138,4);
+                Gdiplus::Color fb2=fwBtnHot?Gdiplus::Color(255,245,158,11):Gdiplus::Color(180,161,98,7);
+                float fbX=fwW-136.f, fbY=fwOffY+16.f;
+                Gdiplus::LinearGradientBrush fbGr(
+                    Gdiplus::PointF(fbX,fbY),Gdiplus::PointF(fbX+124.f,fbY+26.f),fb1,fb2);
+                FillRR(g,fbX,fbY,124.f,26.f,8.f,fbGr);
+                Gdiplus::SolidBrush fbTxt(Gdiplus::Color(255,10,15,28)); // dark text on yellow
+                Gdiplus::StringFormat sfFB;
+                sfFB.SetAlignment(Gdiplus::StringAlignmentCenter);
+                sfFB.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                g.DrawString(fwBtnLbl,-1,&fntSm,
+                    Gdiplus::RectF(fbX,fbY,124.f,26.f),&sfFB,&fbTxt);
+                VBAdd(VB_OPEN_PORT,(int)fbX,(int)fbY,124,26);
+            }
         } else {
             // Sessões Recentes
             if(g_recentSessions.empty()){
@@ -2018,6 +2142,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
                 if(IsServiceInstalled()) DoUninstallService();
                 else DoInstallService();
                 break;
+            case VB_OPEN_PORT: DoOpenFirewallPort(); break;
             case VB_TAB_HOME:
                 g_activeTab=0; InvalidateRect(hw,nullptr,FALSE); break;
             case VB_TAB_RECENT:
@@ -2213,6 +2338,12 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     // ── /install-all ───────────────────────────────────────────────────────
     if(lpCmdLine && strstr(lpCmdLine,"/install-all")){
         ExitProcess(DoInstallAllUsersNow() ? 0 : 1);
+    }
+
+    // ── /add-firewall — runs as admin via CreateProcessWithLogonW ──────────
+    if(lpCmdLine && strstr(lpCmdLine,"/add-firewall")){
+        AddFirewallRuleSilent();
+        ExitProcess(0);
     }
 
     // ── Normal GUI mode ────────────────────────────────────────────────────

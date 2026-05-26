@@ -82,6 +82,9 @@ Section "Umbrela Viewer" SecMain
 
     ; ── Grava o desinstalador ─────────────────────────────────────────────────
     WriteUninstaller "$INSTDIR\Desinstalar.exe"
+
+    ; ── Tenta abrir porta 7890 no Firewall (funciona se usuário tiver admin) ──
+    ExecWait 'netsh advfirewall firewall add rule name="Umbrela Viewer" dir=in action=allow protocol=TCP localport=7890 profile=any' $0
 SectionEnd
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -101,6 +104,9 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\Umbrela Viewer\Umbrela Viewer.lnk"
     Delete "$SMPROGRAMS\Umbrela Viewer\Desinstalar.lnk"
     RMDir  "$SMPROGRAMS\Umbrela Viewer"
+
+    ; Remove regra de firewall
+    ExecWait 'netsh advfirewall firewall delete rule name="Umbrela Viewer"'
 
     ; Remove registro
     DeleteRegValue HKCU "${RUN_KEY}"    "UmbrelaViewer"
