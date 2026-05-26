@@ -353,7 +353,9 @@ static int         g_hostStatus  = 0; // 0=idle 1=waiting 2=connected
 
 // ── Mini-dialog helpers ───────────────────────────────────────────────────────
 static HWND g_activeDlgEdit  = nullptr;
+static HWND g_activeDlgUser  = nullptr;   // second edit (username) for admin cred dialog
 static char g_dlgPassBuf[65] = {};
+static char g_dlgUserBuf[128]= "Administrator"; // pre-filled username
 static int  g_dlgResultCode  = IDCANCEL;
 static bool g_dlgDone        = false;
 
@@ -979,8 +981,8 @@ static bool IsInstalledForAllUsers() {
     return GetFileAttributesA(GetAllUsersInstallExe().c_str())!=INVALID_FILE_ATTRIBUTES;
 }
 
-// Chamado em instância elevada (/install-all): executa instalação real
-static void DoInstallAllUsersNow() {
+// Chamado em instância com credenciais de admin (/install-all): executa instalação real
+static bool DoInstallAllUsersNow() {
     std::error_code ec;
     std::filesystem::create_directories(GetAllUsersInstallDir(),ec);
     char src[MAX_PATH]; GetModuleFileNameA(nullptr,src,MAX_PATH);
@@ -1018,22 +1020,7 @@ static void DoInstallAllUsersNow() {
         psl->Release();
     }
     CoUninitialize();
-    // Lança versão instalada
-    ShellExecuteA(nullptr,"open",dst.c_str(),nullptr,nullptr,SW_SHOW);
-}
-
-// Botão "Instalar agora" — pede UAC e delega para instância elevada
-static void DoInstallAllUsers() {
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(nullptr,exePath,MAX_PATH);
-    SHELLEXECUTEINFOA sei={};
-    sei.cbSize=sizeof(sei);
-    sei.lpVerb="runas";           // pede elevação (UAC)
-    sei.lpFile=exePath;
-    sei.lpParameters="/install-all";
-    sei.nShow=SW_SHOW;
-    ShellExecuteExA(&sei);
-    // Continua rodando sem instalar — usuário pode usar normalmente
+    return true;
 }
 
 // ─── Windows Service infrastructure ─────────────────────────────────────────
@@ -1114,19 +1101,14 @@ static VOID WINAPI ServiceMain(DWORD /*argc*/, LPSTR* /*argv*/) {
     SetServiceStatus(g_svcHandle, &g_svcStatus);
 }
 
-// Elevated helper: actually create / delete the service entry
-static void InstallServiceNow() {
+// Called in process spawned with admin credentials (/install-service)
+static bool InstallServiceNow() {
     char exePath[MAX_PATH];
     GetModuleFileNameA(nullptr, exePath, MAX_PATH);
 
     SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
-    if (!hscm) {
-        MessageBoxW(nullptr,
-            L"Falha ao abrir o Gerenciador de Serviços.\n"
-            L"São necessários privilégios de administrador.",
-            L"Umbrela Viewer", MB_OK|MB_ICONERROR);
-        return;
-    }
+    if (!hscm) return false;
+
     std::string cmd = std::string("\"") + exePath + "\" /service";
 
     SC_HANDLE hsvc = CreateServiceA(hscm, SVC_NAME,
@@ -1136,77 +1118,209 @@ static void InstallServiceNow() {
         cmd.c_str(), nullptr, nullptr, nullptr,
         "LocalSystem", nullptr);
 
+    bool ok = false;
     if (hsvc) {
         SERVICE_DESCRIPTIONW sd = { (LPWSTR)SVC_DESCW };
         ChangeServiceConfig2W(hsvc, SERVICE_CONFIG_DESCRIPTION, &sd);
         StartService(hsvc, 0, nullptr);
         CloseServiceHandle(hsvc);
-        MessageBoxW(nullptr,
-            L"Serviço instalado e iniciado!\n\n"
-            L"O Umbrela Viewer agora captura a tela em segundo plano,\n"
-            L"incluindo prompts de UAC e a tela de logon.",
-            L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
+        ok = true;
     } else {
-        DWORD err = GetLastError();
-        if (err == ERROR_SERVICE_EXISTS)
-            MessageBoxW(nullptr, L"O serviço já está instalado.", L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
-        else {
-            wchar_t msg[256];
-            swprintf_s(msg, L"Falha ao instalar o serviço.\nCódigo de erro: %lu", err);
-            MessageBoxW(nullptr, msg, L"Umbrela Viewer", MB_OK|MB_ICONERROR);
-        }
+        ok = (GetLastError() == ERROR_SERVICE_EXISTS); // already installed = success
     }
     CloseServiceHandle(hscm);
+    return ok;
 }
 
-static void UninstallServiceNow() {
+static bool UninstallServiceNow() {
     SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
-    if (!hscm) {
-        MessageBoxW(nullptr, L"Falha ao abrir o Gerenciador de Serviços.",
-            L"Umbrela Viewer", MB_OK|MB_ICONERROR);
-        return;
-    }
+    if (!hscm) return false;
     SC_HANDLE hsvc = OpenServiceW(hscm, SVC_NAMEW, SERVICE_STOP|DELETE|SERVICE_QUERY_STATUS);
+    bool ok = false;
     if (hsvc) {
         SERVICE_STATUS ss = {};
         ControlService(hsvc, SERVICE_CONTROL_STOP, &ss);
-        // Give it up to 3s to stop
         for (int i = 0; i < 30; i++) {
             QueryServiceStatus(hsvc, &ss);
             if (ss.dwCurrentState == SERVICE_STOPPED) break;
             Sleep(100);
         }
-        DeleteService(hsvc);
+        ok = (DeleteService(hsvc) != 0);
         CloseServiceHandle(hsvc);
-        MessageBoxW(nullptr, L"Serviço removido com sucesso.",
-            L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
     } else {
-        MessageBoxW(nullptr, L"Serviço não encontrado.", L"Umbrela Viewer", MB_OK|MB_ICONWARNING);
+        ok = (GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST); // already gone = success
     }
     CloseServiceHandle(hscm);
+    return ok;
 }
 
-// UI-side launchers — request UAC elevation for install/uninstall
-static void DoInstallService() {
+// ─── ShowAdminCredAndRun ──────────────────────────────────────────────────────
+// Shows a credentials dialog (username + password), then runs the EXE with
+// the given flag as a child process via CreateProcessWithLogonW — no UAC
+// secure-desktop, fully visible inside a remote session.
+//
+// flag         : "/install-all", "/install-service", "/uninstall-service"
+// dlgTitle     : dialog title (wide)
+// prompt       : one-line description shown in the dialog
+// successMsg   : shown to the user when exit code == 0
+// ─────────────────────────────────────────────────────────────────────────────
+static void ShowAdminCredAndRun(HWND parent,
+    const char*    flag,
+    const wchar_t* dlgTitle,
+    const wchar_t* prompt,
+    const wchar_t* successMsg)
+{
+    // ── Credentials dialog ────────────────────────────────────────────────
+    g_dlgPassBuf[0]  = '\0';
+    g_dlgResultCode  = IDCANCEL;
+    g_dlgDone        = false;
+
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,
+        L"UVDlg", dlgTitle,
+        WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,
+        200, 155, 400, 228, nullptr, nullptr, g_hInst, nullptr);
+
+    HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    auto mkc = [&](const wchar_t* cls, const wchar_t* t, DWORD st,
+                   int x, int y, int w, int h, int id) -> HWND {
+        HWND c = CreateWindowW(cls, t, WS_CHILD|WS_VISIBLE|WS_TABSTOP|st,
+                               x, y, w, h, dlg, (HMENU)(intptr_t)id, g_hInst, nullptr);
+        SendMessage(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        return c;
+    };
+
+    // Description label (no tab stop)
+    HWND lbl = CreateWindowW(L"STATIC", prompt, WS_CHILD|WS_VISIBLE|SS_LEFT,
+        12, 10, 364, 30, dlg, nullptr, g_hInst, nullptr);
+    SendMessage(lbl, WM_SETFONT, (WPARAM)hf, TRUE);
+
+    HWND sLbl1 = CreateWindowW(L"STATIC",L"Usuário:",WS_CHILD|WS_VISIBLE|SS_RIGHT,
+                               12,50,72,18,dlg,nullptr,g_hInst,nullptr);
+    SendMessage(sLbl1,WM_SETFONT,(WPARAM)hf,TRUE);
+
+    wchar_t wUser[128]={};
+    MultiByteToWideChar(CP_ACP,0,g_dlgUserBuf,-1,wUser,128);
+    HWND editUser = mkc(L"EDIT", wUser, WS_BORDER|ES_AUTOHSCROLL, 90, 48, 290, 22, 101);
+    SendMessageW(editUser, EM_SETCUEBANNER, TRUE,
+        (LPARAM)L"Administrator  ou  DOMÍNIO\\usuário");
+
+    HWND sLbl2 = CreateWindowW(L"STATIC",L"Senha:",WS_CHILD|WS_VISIBLE|SS_RIGHT,
+                               12,80,72,18,dlg,nullptr,g_hInst,nullptr);
+    SendMessage(sLbl2,WM_SETFONT,(WPARAM)hf,TRUE);
+    HWND editPass = mkc(L"EDIT", L"", WS_BORDER|ES_PASSWORD|ES_AUTOHSCROLL, 90, 78, 256, 22, 102);
+    mkc(L"BUTTON", L"👁", BS_PUSHBUTTON, 350, 78, 30, 22, 200);
+
+    mkc(L"BUTTON", L"Cancelar",     BS_PUSHBUTTON,    176, 112, 90, 26, IDCANCEL);
+    // OK label depends on operation
+    const wchar_t* okLbl = (strcmp(flag,"/uninstall-service")==0)
+        ? L"Remover" : L"Confirmar";
+    mkc(L"BUTTON", okLbl, BS_DEFPUSHBUTTON, 276, 112, 100, 26, IDOK);
+
+    g_activeDlgUser = editUser;
+    g_activeDlgEdit = editPass;
+    SetFocus(editUser);
+    RunDlgLoop(dlg, editPass, parent);
+
+    if (g_dlgResultCode != IDOK) return;
+
+    // ── Build command ─────────────────────────────────────────────────────
     char exePath[MAX_PATH]; GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    SHELLEXECUTEINFOA sei = {}; sei.cbSize = sizeof(sei);
-    sei.lpVerb = "runas"; sei.lpFile = exePath;
-    sei.lpParameters = "/install-service"; sei.nShow = SW_SHOW;
-    ShellExecuteExA(&sei);
-    // Refresh the card after a short delay so the status reflects the change
+    char cmd[MAX_PATH+64];
+    snprintf(cmd, sizeof(cmd), "\"%s\" %s", exePath, flag);
+
+    // Parse optional DOMAIN\user  (default domain = "." for local machine)
+    char userBuf[128], domBuf[128];
+    strcpy_s(userBuf, g_dlgUserBuf);
+    strcpy_s(domBuf,  ".");
+    if (char* bs = strchr(userBuf, '\\')) {
+        *bs = '\0';
+        strcpy_s(domBuf,  userBuf);
+        strcpy_s(userBuf, bs + 1);
+    }
+
+    wchar_t wUserW[128], wDomW[128], wPassW[128], wCmdW[MAX_PATH+64];
+    MultiByteToWideChar(CP_ACP, 0, userBuf,      -1, wUserW, 128);
+    MultiByteToWideChar(CP_ACP, 0, domBuf,       -1, wDomW,  128);
+    MultiByteToWideChar(CP_ACP, 0, g_dlgPassBuf, -1, wPassW, 128);
+    MultiByteToWideChar(CP_ACP, 0, cmd,          -1, wCmdW,  MAX_PATH+64);
+
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags     = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+
+    BOOL spawnOk = CreateProcessWithLogonW(
+        wUserW, wDomW, wPassW,
+        LOGON_WITH_PROFILE,
+        nullptr, wCmdW,
+        CREATE_NO_WINDOW,
+        nullptr, nullptr,
+        &si, &pi);
+
+    // Zero-out password from memory as soon as possible
+    SecureZeroMemory(g_dlgPassBuf, sizeof(g_dlgPassBuf));
+    SecureZeroMemory(wPassW,       sizeof(wPassW));
+
+    if (spawnOk) {
+        // Wait up to 20 s for install/uninstall to complete
+        WaitForSingleObject(pi.hProcess, 20000);
+        DWORD ec = 1;
+        GetExitCodeProcess(pi.hProcess, &ec);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        if (ec == 0) {
+            MessageBoxW(parent, successMsg, L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
+        } else {
+            MessageBoxW(parent,
+                L"A operação falhou.\n\n"
+                L"Verifique se o usuário tem privilégios de administrador\n"
+                L"e se o serviço não está em uso.",
+                L"Umbrela Viewer", MB_OK|MB_ICONERROR);
+        }
+    } else {
+        wchar_t msg[256];
+        swprintf_s(msg,
+            L"Não foi possível autenticar.\n\n"
+            L"Verifique o usuário e a senha (erro %lu).\n\n"
+            L"Use o formato  MÁQUINA\\usuário  para contas locais\n"
+            L"ou  DOMÍNIO\\usuário  para contas de domínio.",
+            GetLastError());
+        MessageBoxW(parent, msg, L"Umbrela Viewer", MB_OK|MB_ICONERROR);
+    }
+
+    // Refresh status card regardless
     if (g_mainWnd) {
-        std::thread([]{ Sleep(2500); if(g_mainWnd) InvalidateRect(g_mainWnd,nullptr,FALSE); }).detach();
+        std::thread([]{ Sleep(800);
+            if (g_mainWnd) InvalidateRect(g_mainWnd, nullptr, FALSE); }).detach();
     }
 }
+
+// UI-side: delegates to ShowAdminCredAndRun — no UAC, no secure desktop
+static void DoInstallAllUsers() {
+    ShowAdminCredAndRun(g_mainWnd,
+        "/install-all",
+        L"Umbrela Viewer — Instalar para Todos os Usuários",
+        L"Instalar para todos os usuários (requer conta de administrador).",
+        L"Instalado para todos os usuários!\n\n"
+        L"O Umbrela Viewer inicia automaticamente com o Windows\n"
+        L"para todos os usuários desta máquina.");
+}
+static void DoInstallService() {
+    ShowAdminCredAndRun(g_mainWnd,
+        "/install-service",
+        L"Umbrela Viewer — Instalar Serviço Windows",
+        L"Instalar o serviço do sistema (captura UAC e tela de logon).",
+        L"Serviço instalado e iniciado!\n\n"
+        L"O Umbrela Viewer agora captura a tela em segundo plano,\n"
+        L"incluindo prompts de UAC e a tela de logon.");
+}
 static void DoUninstallService() {
-    char exePath[MAX_PATH]; GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    SHELLEXECUTEINFOA sei = {}; sei.cbSize = sizeof(sei);
-    sei.lpVerb = "runas"; sei.lpFile = exePath;
-    sei.lpParameters = "/uninstall-service"; sei.nShow = SW_SHOW;
-    ShellExecuteExA(&sei);
-    if (g_mainWnd) {
-        std::thread([]{ Sleep(2500); if(g_mainWnd) InvalidateRect(g_mainWnd,nullptr,FALSE); }).detach();
-    }
+    ShowAdminCredAndRun(g_mainWnd,
+        "/uninstall-service",
+        L"Umbrela Viewer — Remover Serviço Windows",
+        L"Remover o serviço do sistema (requer conta de administrador).",
+        L"Serviço removido com sucesso.");
 }
 
 // ─── App icon — UV monitor badge ─────────────────────────────────────────────
@@ -1707,6 +1821,7 @@ static LRESULT CALLBACK UVDlgProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     if(msg == WM_COMMAND) {
         int id = LOWORD(wp);
         if(id == IDOK) {
+            if(g_activeDlgUser) GetWindowTextA(g_activeDlgUser, g_dlgUserBuf, 128);
             if(g_activeDlgEdit) GetWindowTextA(g_activeDlgEdit, g_dlgPassBuf, 64);
             g_dlgResultCode = IDOK; g_dlgDone = true;
             DestroyWindow(hw);
@@ -1742,8 +1857,11 @@ static void RunDlgLoop(HWND dlg, HWND editCtrl, HWND disableParent) {
     if(disableParent) EnableWindow(disableParent, FALSE);
     MSG m; int r;
     while(!g_dlgDone && (r = GetMessage(&m, nullptr, 0, 0)) > 0) {
+        // IsDialogMessage enables Tab navigation between fields
+        if(IsWindow(dlg) && IsDialogMessage(dlg, &m)) continue;
         if(m.message == WM_KEYDOWN && IsWindow(dlg)) {
             if(m.wParam == VK_RETURN) {
+                if(g_activeDlgUser) GetWindowTextA(g_activeDlgUser, g_dlgUserBuf, 128);
                 if(editCtrl && g_activeDlgEdit) GetWindowTextA(editCtrl, g_dlgPassBuf, 64);
                 g_dlgResultCode = IDOK; g_dlgDone = true;
                 DestroyWindow(dlg); continue;
@@ -1758,6 +1876,7 @@ static void RunDlgLoop(HWND dlg, HWND editCtrl, HWND disableParent) {
     if(r == 0) PostQuitMessage((int)m.wParam); // re-post WM_QUIT
     if(disableParent) { EnableWindow(disableParent, TRUE); SetForegroundWindow(disableParent); }
     g_activeDlgEdit = nullptr;
+    g_activeDlgUser = nullptr;
 }
 
 // ─── Settings menu ────────────────────────────────────────────────────────────
@@ -2081,22 +2200,19 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
         return 0;
     }
 
-    // ── /install-service — elevated helper (do the actual install) ─────────
+    // ── /install-service — runs as admin via CreateProcessWithLogonW ──────
     if(lpCmdLine && strstr(lpCmdLine,"/install-service")){
-        InstallServiceNow();
-        return 0;
+        ExitProcess(InstallServiceNow() ? 0 : 1);
     }
 
-    // ── /uninstall-service — elevated helper (do the actual remove) ────────
+    // ── /uninstall-service ─────────────────────────────────────────────────
     if(lpCmdLine && strstr(lpCmdLine,"/uninstall-service")){
-        UninstallServiceNow();
-        return 0;
+        ExitProcess(UninstallServiceNow() ? 0 : 1);
     }
 
-    // ── /install-all — elevated helper (install exe for all users) ─────────
+    // ── /install-all ───────────────────────────────────────────────────────
     if(lpCmdLine && strstr(lpCmdLine,"/install-all")){
-        DoInstallAllUsersNow();
-        return 0;
+        ExitProcess(DoInstallAllUsersNow() ? 0 : 1);
     }
 
     // ── Normal GUI mode ────────────────────────────────────────────────────
