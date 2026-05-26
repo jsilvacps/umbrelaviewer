@@ -1,0 +1,94 @@
+name: Build & Release
+
+# ── Disparadores ───────────────────────────────────────────────────────────────
+on:
+  push:
+    tags:
+      - 'v*.*'          # ex: v1.0  v1.1  v2.0
+  workflow_dispatch:     # permite rodar manualmente pelo GitHub
+
+# ── Job único: Windows Server 2022 com VS2022 ─────────────────────────────────
+jobs:
+  build:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      # 1. Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Configura o ambiente MSVC x64
+      - name: Setup MSVC Dev Environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # 3. Verifica / instala NSIS (pré-instalado no windows-latest, mas garante)
+      - name: Verify NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis --yes --no-progress
+          }
+          Write-Host "NSIS: $(makensis /VERSION)"
+
+      # 4. CMake configure
+      - name: CMake Configure
+        run: cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      # 5. CMake build
+      - name: CMake Build
+        run: cmake --build build --config Release
+
+      # 6. Copia EXE para dist/
+      - name: Stage EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\UmbrelaViewer.exe dist\ -Force
+
+      # 7. Build NSIS installer
+      - name: Build Installer
+        run: makensis installer\UmbrelaViewer.nsi
+
+      # 8. Calcula hash SHA-256 dos artefatos (para verificação de integridade)
+      - name: Compute checksums
+        shell: pwsh
+        run: |
+          $hash1 = (Get-FileHash dist\UmbrelaViewer.exe       -Algorithm SHA256).Hash
+          $hash2 = (Get-FileHash dist\UmbrelaViewer_Setup.exe -Algorithm SHA256).Hash
+          @"
+          UmbrelaViewer.exe       SHA256: $hash1
+          UmbrelaViewer_Setup.exe SHA256: $hash2
+          "@ | Set-Content dist\checksums.txt
+          Get-Content dist\checksums.txt
+
+      # 9. Cria a GitHub Release e faz upload dos artefatos
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Umbrela Viewer ${{ github.ref_name }}"
+          body: |
+            ## Umbrela Viewer ${{ github.ref_name }}
+
+            ### Download
+            | Arquivo | Descrição |
+            |---------|-----------|
+            | **UmbrelaViewer_Setup.exe** | ✅ Instalador recomendado — sem senha de admin |
+            | UmbrelaViewer.exe | Executável avulso (portable) |
+
+            ### Como instalar
+            1. Baixe **UmbrelaViewer_Setup.exe**
+            2. Execute o arquivo — nenhuma senha de administrador é necessária
+            3. O programa inicia automaticamente com o Windows
+
+            ### Verificação de integridade
+            Confira o arquivo `checksums.txt` para verificar os hashes SHA-256.
+          files: |
+            dist/UmbrelaViewer_Setup.exe
+            dist/UmbrelaViewer.exe
+            dist/checksums.txt
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

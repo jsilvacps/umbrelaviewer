@@ -31,6 +31,7 @@ target_link_libraries(AcessoRemoto PRIVATE
     comctl32
     comdlg32
     urlmon
+    wtsapi32
 )
 
 if(MSVC)

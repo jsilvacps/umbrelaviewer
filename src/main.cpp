@@ -17,6 +17,7 @@
 #include <urlmon.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
+#include <wtsapi32.h>
 
 #include <thread>
 #include <atomic>
@@ -46,6 +47,7 @@
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "urlmon.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 // ─── Versão e URLs de atualização ────────────────────────────────────────────
 // Incrementar APP_VERSION_INT a cada release (ex: 1.0 = 100, 1.1 = 110, 2.0 = 200)
@@ -61,61 +63,78 @@
 #endif
 
 // ─── Palette (GDI+ Color) ─────────────────────────────────────────────────────
+// CSS design-system: --bg:#0A0F1C --card:#111827 --primary:#2563EB
+//   --primary-2:#22D3EE --success:#10B981 --warning:#F59E0B
+//   --text:#E2E8F0 --muted:#94A3B8 --border:rgba(37,99,235,0.35)
 namespace C {
     using Gc = Gdiplus::Color;
-    const Gc BG      {255,18,22,38};     // main background
-    const Gc TOOLBAR {255,11,14,24};     // top toolbar
-    const Gc CARD    {255,25,30,50};     // hero card
-    const Gc ADDRBOX {255,13,16,28};     // address bar
-    const Gc BORDER  {255,44,54,84};     // card/input border
-    const Gc BDRHI   {255,60,80,140};    // highlighted border
-    const Gc IP      {255,77,210,255};   // IP address (bright cyan-blue)
-    const Gc PASS    {255,130,225,145};  // password (soft green)
-    const Gc TEXT    {255,228,232,244};  // primary text
-    const Gc TEXT2   {255,100,112,150};  // secondary/hint text
-    const Gc BTNBG   {255,25,100,200};   // connect button bg
-    const Gc BTNHOV  {255,35,130,240};   // connect button hover
-    const Gc BTNDN   {255,15,70,155};    // connect button pressed
-    const Gc MENUBTN {255,255,255,255};  // hamburger lines
-    const Gc GREEN   {255,80,225,145};   // status online
-    const Gc YELLOW  {255,255,200,60};   // status waiting
-    const Gc SEP     {255,32,38,62};     // separator line
-    const Gc ICONBG  {255,30,80,180};    // monitor icon bg
-    // COLORREF equivalents
-    constexpr COLORREF BG_CR    = RGB(18,22,38);
-    constexpr COLORREF ADDRB_CR = RGB(13,16,28);
-    constexpr COLORREF TEXT_CR  = RGB(228,232,244);
-    constexpr COLORREF TEXT2_CR = RGB(100,112,150);
+    const Gc BG      {255, 10, 15, 28};   // #0A0F1C
+    const Gc TOOLBAR {255, 10, 16, 32};   // navbar gradient top
+    const Gc TOOLBAR2{255, 15, 23, 42};   // navbar gradient bottom
+    const Gc CARD    {255, 17, 24, 39};   // #111827
+    const Gc CARD2   {255, 30, 41, 59};   // #1E293B
+    const Gc ADDRBOX {255, 15, 23, 42};   // connect box fill (#0F172A)
+    const Gc BORDER  { 90, 37, 99,235};   // rgba(37,99,235,0.35)
+    const Gc BDRHI   {255, 34,211,238};   // #22D3EE – focused
+    const Gc IP      {255, 34,211,238};   // #22D3EE – cyan
+    const Gc IPGLOW  { 55, 34,211,238};   // IP glow layer
+    const Gc PASS    {255, 52,211,153};   // #34D399 – green password
+    const Gc PASSBG  { 30, 16,185,129};   // rgba(16,185,129,0.12)
+    const Gc TEXT    {255,226,232,240};   // #E2E8F0
+    const Gc TEXT2   {255,148,163,184};   // #94A3B8 (muted)
+    const Gc BTNBG   {255, 37, 99,235};   // #2563EB
+    const Gc BTNHOV  {255, 14,165,233};   // #0EA5E9
+    const Gc BTNDN   {255, 30, 64,175};   // pressed
+    const Gc MENUBTN {255,148,163,184};   // hamburger
+    const Gc GREEN   {255, 16,185,129};   // #10B981 – success
+    const Gc YELLOW  {255,245,158, 11};   // #F59E0B – warning
+    const Gc SEP     { 90, 37, 99,235};   // separator = border
+    const Gc ACCENT  {255, 34,211,238};   // #22D3EE
+    const Gc PRIMARY2{255, 34,211,238};   // alias cyan
+    const Gc ICONBG  {255, 37, 99,235};   // #2563EB icon bg
+    constexpr COLORREF BG_CR    = RGB( 10, 15, 28);
+    constexpr COLORREF ADDRB_CR = RGB( 15, 23, 42);
+    constexpr COLORREF TEXT_CR  = RGB(226,232,240);
+    constexpr COLORREF TEXT2_CR = RGB(148,163,184);
 }
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
-#define WIN_W     462
-#define WIN_H     412
-#define TOOL_H     50   // toolbar height
-#define ADDR_Y     50   // address bar top
-#define ADDR_H     56   // address bar height
-#define HERO_Y    108   // hero card top
-#define HERO_H    230   // hero card height
-#define FOOT_Y    338   // footer top
-#define FOOT_H     36   // footer height
+#define WIN_W     960   // wider — matches AnyDesk proportions
+#define WIN_H     660
+#define TOOL_H     46   // title bar
+#define ADDR_Y     46   // address bar top
+#define ADDR_H     50   // address bar height
+#define HERO_Y     96   // "Este dispositivo" + senha section
+#define HERO_H    130   // hero height
+#define TAB_Y     226   // tab bar top   (HERO_Y+HERO_H)
+#define TAB_H      38   // tab bar height
+#define CONT_Y    264   // content below tabs  (TAB_Y+TAB_H)
+#define CONT_H    364   // content height
+#define FOOT_Y    628   // footer top   (CONT_Y+CONT_H)
+#define FOOT_H     32   // footer height  (FOOT_Y+FOOT_H == WIN_H)
 
 // ─── Virtual button system ────────────────────────────────────────────────────
-#define VB_HAMBURGER  1
-#define VB_CONNECT    2
-#define VB_COPY_IP    3
-#define VB_REGEN_PASS 4
-#define VB_SETTINGS   5
+#define VB_HAMBURGER   1
+#define VB_CONNECT     2
+#define VB_COPY_IP     3
+#define VB_REGEN_PASS  4
+#define VB_SHARE       5   // "Compartilhar" button
+#define VB_TAB_HOME    6
+#define VB_TAB_RECENT  7
+#define VB_SESSION_0   10  // recent-session cards: 10..17 (up to 8)
+#define VB_INSTALL_NOW  9  // "Instalar para todos os usuários" card button
+#define VB_SVC_TOGGLE  18  // service card: install / stop service
 
 struct VBtn { RECT rc; int id; };
-static VBtn  g_btns[8] = {};
-static int   g_nbtns   = 0;
+static VBtn  g_btns[24] = {};
+static int   g_nbtns    = 0;
 static int   g_hotBtn  = 0;
 static int   g_dnBtn   = 0;
 static bool  g_tracking = false;
 
 static void VBClear() { g_nbtns = 0; }
 static void VBAdd(int id, int x, int y, int w, int h) {
-    if (g_nbtns < 8) g_btns[g_nbtns++] = {{x,y,x+w,y+h}, id};
+    if (g_nbtns < 24) g_btns[g_nbtns++] = {{x,y,x+w,y+h}, id};
 }
 static int VBHitTest(int mx, int my) {
     for (int i = 0; i < g_nbtns; i++)
@@ -160,37 +179,116 @@ static void DrawHamburger(Gdiplus::Graphics& g, int cx, int cy, bool hot) {
     g.DrawLine(&pen, (float)(cx-half),(float)(cy+8),(float)(cx+half),(float)(cy+8));
 }
 
-// Draw Umbrela Viewer icon (umbrella + monitor + cursor)
+// ─── Shared icon drawing (UV monitor + speed lines + neon glow) ──────────────
+// withCircle=true  → draws inside a circular badge (standalone .ico)
+// withCircle=false → floats directly on background (toolbar badge)
+static void DrawIconContent(Gdiplus::Graphics& g, float x, float y, float sz, bool withCircle) {
+    float cx = x + sz * 0.5f, cy = y + sz * 0.5f;
+
+    // ── Optional circular badge ───────────────────────────────────────────
+    if (withCircle) {
+        Gdiplus::SolidBrush bg(Gdiplus::Color(255, 5, 8, 22));
+        g.FillEllipse(&bg, x, y, sz, sz);
+        // Outer soft glow
+        Gdiplus::Pen glow(Gdiplus::Color(48, 0, 100, 255), sz * 0.13f);
+        g.DrawEllipse(&glow, x + sz*0.03f, y + sz*0.03f, sz*0.94f, sz*0.94f);
+        // Bright cyan ring
+        Gdiplus::Pen ring(Gdiplus::Color(185, 0, 207, 255), sz * 0.044f);
+        g.DrawEllipse(&ring, x + sz*0.075f, y + sz*0.075f, sz*0.85f, sz*0.85f);
+    }
+
+    // ── Monitor dimensions ────────────────────────────────────────────────
+    // Shift monitor slightly right to leave room for speed-lines on the left
+    float mw = withCircle ? sz * 0.58f : sz * 0.63f;
+    float mh = mw * 0.67f;
+    float mx = cx - mw * 0.5f + sz * (withCircle ? 0.04f : 0.06f);
+    float my = cy - mh * 0.5f + sz * (withCircle ? -0.04f : -0.01f);
+
+    // Neon glow halo around monitor
+    Gdiplus::Pen monGlow(Gdiplus::Color(50, 0, 207, 255), sz * 0.060f);
+    StrokeRR(g, mx - sz*0.024f, my - sz*0.024f,
+               mw + sz*0.048f, mh + sz*0.048f, sz*0.07f, monGlow);
+
+    // Monitor fill – very dark navy (just visible against background)
+    Gdiplus::SolidBrush monFill(Gdiplus::Color(255, 7, 12, 42));
+    FillRR(g, mx, my, mw, mh, sz * 0.052f, monFill);
+
+    // Monitor border – gradient top #00CFFF → bottom #007BFF
+    {
+        Gdiplus::LinearGradientBrush borderBr(
+            Gdiplus::PointF(mx, my), Gdiplus::PointF(mx, my + mh),
+            Gdiplus::Color(215, 0, 207, 255),
+            Gdiplus::Color(175, 0, 123, 255));
+        Gdiplus::Pen borderPen(&borderBr, sz * 0.030f);
+        StrokeRR(g, mx, my, mw, mh, sz * 0.052f, borderPen);
+    }
+
+    // ── Monitor stand ─────────────────────────────────────────────────────
+    if (sz >= 20) {
+        float nkW = mw * 0.22f, nkH = sz * 0.058f;
+        float bsW = mw * 0.46f, bsH = sz * 0.036f;
+        Gdiplus::SolidBrush nkBr(Gdiplus::Color(145, 0, 85, 205));
+        Gdiplus::SolidBrush bsBr(Gdiplus::Color(125, 0, 65, 175));
+        FillRR(g, cx - nkW*0.5f, my+mh,      nkW, nkH, sz*0.010f, nkBr);
+        FillRR(g, cx - bsW*0.5f, my+mh+nkH,  bsW, bsH, sz*0.010f, bsBr);
+    }
+
+    // ── Three dots inside monitor – top-right corner ───────────────────────
+    if (sz >= 22) {
+        float dr = sz * 0.024f;
+        float dy = my + sz * 0.060f;
+        float dx = mx + mw - sz * 0.068f;
+        Gdiplus::SolidBrush dotBr(Gdiplus::Color(205, 0, 229, 255));
+        for (int i = 0; i < 3; i++)
+            g.FillEllipse(&dotBr, dx - i*dr*2.55f - dr, dy - dr, dr*2.f, dr*2.f);
+    }
+
+    // ── Speed / motion lines – left of monitor ────────────────────────────
+    if (sz >= 24) {
+        float lx2 = mx - sz * 0.055f;   // right anchor (just left of monitor)
+        struct { float len; float yOff; BYTE alpha; } lines[] = {
+            { sz*0.130f, mh*0.26f, 140 },   // top line (shorter)
+            { sz*0.200f, mh*0.50f, 200 },   // middle line (longest)
+            { sz*0.130f, mh*0.74f, 110 },   // bottom line (shorter)
+        };
+        for (auto& l : lines) {
+            Gdiplus::Pen lp(Gdiplus::Color(l.alpha, 0, 207, 255), sz * 0.022f);
+            lp.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
+            float ly = my + l.yOff;
+            g.DrawLine(&lp, lx2 - l.len, ly, lx2, ly);
+            // Bright dot at the tip of each line
+            Gdiplus::SolidBrush dp(Gdiplus::Color((BYTE)std::min(255,l.alpha+55), 0, 229, 255));
+            float dr2 = sz * 0.019f;
+            g.FillEllipse(&dp, lx2 - l.len - dr2, ly - dr2, dr2*2.f, dr2*2.f);
+        }
+    }
+
+    // ── "UV" monogram inside monitor ──────────────────────────────────────
+    if (sz >= 30) {
+        Gdiplus::FontFamily ff(L"Segoe UI");
+        float uSz = mh * 0.56f;
+        Gdiplus::Font fntU(&ff, uSz,        Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::Font fntV(&ff, uSz * 0.86f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::RectF uMsr, vMsr;
+        g.MeasureString(L"U", -1, &fntU, Gdiplus::PointF(0,0), &uMsr);
+        g.MeasureString(L"V", -1, &fntV, Gdiplus::PointF(0,0), &vMsr);
+        // Centre text in monitor, slightly right of monitor-centre
+        float totalW = uMsr.Width * 0.82f + vMsr.Width * 0.80f;
+        float tx = (mx + mw * 0.5f) - totalW * 0.5f + sz * 0.02f;
+        float ty = my + (mh - uMsr.Height) * 0.46f;
+        // "U" – neon cyan  #00E5FF
+        Gdiplus::SolidBrush uBr(Gdiplus::Color(255, 0, 229, 255));
+        g.DrawString(L"U", -1, &fntU, Gdiplus::PointF(tx, ty), &uBr);
+        // "V" – metallic white  #F2F5F7, slightly overlapping U and offset down
+        Gdiplus::SolidBrush vBr(Gdiplus::Color(240, 242, 245, 247));
+        g.DrawString(L"V", -1, &fntV,
+            Gdiplus::PointF(tx + uMsr.Width * 0.74f, ty + sz * 0.014f), &vBr);
+    }
+}
+
+// Toolbar badge – no circular background, floats on dark gradient
 static void DrawUmbrelaIcon(Gdiplus::Graphics& g, float x, float y, float sz) {
-    float cx = x+sz*0.5f;
-    // Dark circle background
-    Gdiplus::SolidBrush bg(Gdiplus::Color(255,5,10,40));
-    g.FillEllipse(&bg, x, y, sz, sz);
-    // Blue glow ring
-    Gdiplus::Pen glow(Gdiplus::Color(120,20,80,255), sz*0.1f);
-    g.DrawEllipse(&glow, x+sz*0.04f, y+sz*0.04f, sz*0.92f, sz*0.92f);
-    Gdiplus::Pen ring(Gdiplus::Color(220,35,115,255), sz*0.055f);
-    g.DrawEllipse(&ring, x+sz*0.06f, y+sz*0.06f, sz*0.88f, sz*0.88f);
-    // Umbrella dome arc
-    Gdiplus::Pen umbra(Gdiplus::Color(240,140,195,255), sz*0.075f);
-    umbra.SetLineCap(Gdiplus::LineCapRound,Gdiplus::LineCapRound,Gdiplus::DashCapRound);
-    g.DrawArc(&umbra, x+sz*0.15f, y+sz*0.09f, sz*0.70f, sz*0.48f, 180.f, 180.f);
-    // Pole
-    Gdiplus::Pen pole(Gdiplus::Color(210,120,185,255), sz*0.055f);
-    pole.SetLineCap(Gdiplus::LineCapRound,Gdiplus::LineCapRound,Gdiplus::DashCapRound);
-    g.DrawLine(&pole, cx, y+sz*0.33f, cx, y+sz*0.57f);
-    // Monitor body
-    Gdiplus::Pen mon(Gdiplus::Color(220,75,150,245), sz*0.055f);
-    float mw=sz*0.44f, mh=sz*0.27f, mx=cx-mw*0.5f, my=y+sz*0.57f;
-    g.DrawRectangle(&mon, mx, my, mw, mh);
-    // Monitor stand
-    g.DrawLine(&mon, cx, my+mh, cx, my+mh+sz*0.07f);
-    g.DrawLine(&mon, cx-sz*0.11f, my+mh+sz*0.07f, cx+sz*0.11f, my+mh+sz*0.07f);
-    // Cursor (triangle arrow) inside monitor
-    Gdiplus::SolidBrush cur(Gdiplus::Color(240,175,220,255));
-    float arx=cx-sz*0.05f, ary=my+sz*0.03f, aw=sz*0.1f, ah=sz*0.15f;
-    Gdiplus::PointF pts[3]={{arx,ary},{arx,ary+ah},{arx+aw,ary+ah*0.65f}};
-    g.FillPolygon(&cur, pts, 3);
+    DrawIconContent(g, x, y, sz, false);
 }
 
 // Draw lock icon
@@ -231,6 +329,26 @@ static std::vector<uint8_t> g_frameData;
 static std::string g_sessionPass;
 static std::string g_defaultPass;
 static char        g_localIP[64] = "Obtendo...";
+
+// ─── Service globals ──────────────────────────────────────────────────────────
+static bool                  g_runningAsService = false;
+static SERVICE_STATUS        g_svcStatus        = {};
+static SERVICE_STATUS_HANDLE g_svcHandle        = nullptr;
+static HANDLE                g_svcStopEvt       = nullptr;
+static constexpr char        SVC_NAME[]         = "UmbrelaViewer";
+static constexpr wchar_t     SVC_NAMEW[]        = L"UmbrelaViewer";
+static constexpr wchar_t     SVC_DISPLAYW[]     = L"Umbrela Viewer Remote Access";
+static constexpr wchar_t     SVC_DESCW[]        =
+    L"Provides remote desktop access including UAC secure desktop capture.";
+
+// ─── Recent sessions ──────────────────────────────────────────────────────────
+struct RecentSession { std::string ip, name; time_t lastConn = 0; };
+static std::vector<RecentSession> g_recentSessions;
+static int         g_activeTab     = 0;    // 0=Início  1=Sessões Recentes
+static std::string g_connectingIP;          // IP being dialled (saved on WM_CONNECT_OK)
+// Access-request synchronization (host side — empty-password connection)
+static HANDLE              g_accessEvent    = nullptr; // manual-reset event
+static std::atomic<bool>   g_accessDecision { false };  // true = aceitar
 static int         g_hostStatus  = 0; // 0=idle 1=waiting 2=connected
 
 // ── Mini-dialog helpers ───────────────────────────────────────────────────────
@@ -252,8 +370,11 @@ static NOTIFYICONDATAA g_nid = {};
 static HINSTANCE g_hInst = nullptr;
 
 // ─── Custom messages ──────────────────────────────────────────────────────────
-#define WM_UPDATE_AVAILABLE  (WM_USER+20)
-#define WM_HOST_STATUS       (WM_USER+10)
+#define WM_UPDATE_AVAILABLE     (WM_USER+20)
+#define WM_CONNECT_OK           (WM_USER+31)
+#define WM_CONNECT_FAIL         (WM_USER+32)
+#define WM_HOST_STATUS          (WM_USER+10)
+#define WM_HOST_ACCESS_REQUEST  (WM_USER+40)  // host: incoming access request (no password)
 #define WM_VIEW_FRAME        (WM_USER+11)
 #define WM_VIEW_CONNECTED    (WM_USER+12)
 #define WM_VIEW_DISCONNECTED (WM_USER+13)
@@ -277,13 +398,33 @@ static std::string GetConfigPath() {
 }
 static void LoadConfig() {
     std::ifstream f(GetConfigPath()); std::string ln;
-    while (std::getline(f,ln))
-        if (ln.rfind("default_password=",0)==0) g_defaultPass=ln.substr(17);
+    while (std::getline(f,ln)) {
+        while(!ln.empty()&&(ln.back()=='\r'||ln.back()=='\n')) ln.pop_back();
+        if (ln.rfind("default_password=",0)==0) {
+            g_defaultPass=ln.substr(17);
+            while(!g_defaultPass.empty()&&(g_defaultPass.back()=='\r'||g_defaultPass.back()==' '))
+                g_defaultPass.pop_back();
+        } else if (ln.rfind("recent=",0)==0) {
+            std::string v=ln.substr(7);
+            auto p1=v.find('|'), p2=v.rfind('|');
+            if(p1!=std::string::npos && p2!=p1) {
+                RecentSession rs;
+                rs.ip  =v.substr(0,p1);
+                rs.name=v.substr(p1+1,p2-p1-1);
+                try { rs.lastConn=(time_t)std::stoll(v.substr(p2+1)); } catch(...) {}
+                if(!rs.ip.empty()) g_recentSessions.push_back(rs);
+            }
+        }
+    }
 }
 static void SaveConfig() {
     auto path = GetConfigPath();
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-    std::ofstream f(path); if(f) f<<"default_password="<<g_defaultPass<<"\n";
+    std::ofstream f(path);
+    if(!f) return;
+    if(!g_defaultPass.empty()) f<<"default_password="<<g_defaultPass<<"\n";
+    for(auto& s : g_recentSessions)
+        f<<"recent="<<s.ip<<"|"<<s.name<<"|"<<(long long)s.lastConn<<"\n";
 }
 
 // ─── Password ────────────────────────────────────────────────────────────────
@@ -341,7 +482,9 @@ static void AppendChat(const char* who,const char* text){
 
 // ─── Host logic ───────────────────────────────────────────────────────────────
 static void HostStreamThread(){
-    ScreenCapture cap; if(!cap.Init()) return;
+    ScreenCapture cap;
+    cap.SetServiceMode(g_runningAsService);
+    if(!cap.Init()) return;
     ScreenInfoData si={(uint32_t)cap.GetWidth(),(uint32_t)cap.GetHeight()};
     SrvSend(PacketType::SCREEN_INFO,&si,sizeof(si));
     std::vector<uint8_t> frame;
@@ -358,9 +501,48 @@ static void HostClientThread(SOCKET sock){
        ||hdr.dataSize!=sizeof(crd)||!RecvAll(sock,&crd,sizeof(crd))){
         closesocket(sock); return;
     }
-    if(g_sessionPass!=crd.password){
-        PacketHeader deny={PacketType::CONNECT_DENY,0};
-        send(sock,(char*)&deny,sizeof(deny),0); closesocket(sock); return;
+    bool emptyPass = (crd.password[0] == '\0');
+    if(emptyPass){
+        bool allowed = false;
+        if(g_runningAsService){
+            // ── Modo serviço: envia diálogo para a sessão interativa via WTS ──
+            DWORD sessionId = WTSGetActiveConsoleSessionId();
+            static const wchar_t* title =
+                L"Umbrela Viewer — Solicitação de Acesso";
+            static const wchar_t* text  =
+                L"Um técnico solicita acesso remoto a este computador.\n\n"
+                L"Deseja permitir a conexão?\n\n"
+                L"Se não reconhece esta solicitação, clique em NÃO.";
+            DWORD response = 0;
+            BOOL ok = WTSSendMessageW(
+                WTS_CURRENT_SERVER_HANDLE, sessionId,
+                (LPWSTR)title, (DWORD)(wcslen(title)*sizeof(wchar_t)),
+                (LPWSTR)text,  (DWORD)(wcslen(text) *sizeof(wchar_t)),
+                MB_YESNO|MB_ICONQUESTION|MB_TOPMOST|MB_DEFBUTTON2,
+                30, &response, TRUE);
+            allowed = (ok && response == IDYES);
+        } else {
+            // ── Modo normal: pede ao usuário via janela principal ──
+            if(g_accessEvent) {
+                ResetEvent(g_accessEvent);
+                g_accessDecision = false;
+                PostMessage(g_mainWnd, WM_HOST_ACCESS_REQUEST, 0, 0);
+                DWORD r = WaitForSingleObject(g_accessEvent, 30000);
+                allowed = (r == WAIT_OBJECT_0 && g_accessDecision.load());
+            }
+        }
+        if(!allowed){
+            PacketHeader deny={PacketType::CONNECT_DENY,0};
+            send(sock,(char*)&deny,sizeof(deny),0);
+            closesocket(sock); return;
+        }
+    } else {
+        bool passOk = (g_sessionPass==crd.password) ||
+                      (!g_defaultPass.empty() && g_defaultPass==crd.password);
+        if(!passOk){
+            PacketHeader deny={PacketType::CONNECT_DENY,0};
+            send(sock,(char*)&deny,sizeof(deny),0); closesocket(sock); return;
+        }
     }
     PacketHeader ok={PacketType::CONNECT_ACCEPT,0};
     send(sock,(char*)&ok,sizeof(ok),0);
@@ -416,8 +598,8 @@ static void HostAcceptThread(){
         SOCKET c=accept(g_srvSock,(sockaddr*)&addr,&len);
         if(c==INVALID_SOCKET){if(g_srvRunning)Sleep(50);continue;}
         if(g_srvConnected){
-            PacketHeader deny={PacketType::CONNECT_DENY,0};
-            send(c,(char*)&deny,sizeof(deny),0);closesocket(c);continue;
+            PacketHeader busy={PacketType::CONNECT_BUSY,0};
+            send(c,(char*)&busy,sizeof(busy),0);closesocket(c);continue;
         }
         std::thread(HostClientThread,c).detach();
     }
@@ -600,8 +782,9 @@ static LRESULT CALLBACK ViewerWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
 }
 
 static void CreateViewerWindow(){
-    g_viewerWnd=CreateWindowA("ARViewerWnd","Umbrela Viewer — Sessão Remota",
+    g_viewerWnd=CreateWindowA("ARViewerWnd","Umbrela Viewer",
         WS_OVERLAPPEDWINDOW|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,1250,750,nullptr,nullptr,g_hInst,nullptr);
+    SetWindowTextW(g_viewerWnd,L"Umbrela Viewer — Sessão Remota");
     BOOL dark=TRUE;DwmSetWindowAttribute(g_viewerWnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
     g_viewPanel=CreateWindowA("ARViewPanel","",WS_CHILD|WS_VISIBLE,0,VTH,900,600,g_viewerWnd,(HMENU)400,g_hInst,nullptr);
     g_vChatLog=CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT","",
@@ -619,113 +802,213 @@ static void CreateViewerWindow(){
     DoViewerLayout(g_viewerWnd);
 }
 
+// ─── Session helpers ──────────────────────────────────────────────────────────
+static void AddRecentSession(const std::string& ip) {
+    // Remove duplicate
+    g_recentSessions.erase(
+        std::remove_if(g_recentSessions.begin(), g_recentSessions.end(),
+            [&](const RecentSession& s){ return s.ip==ip; }),
+        g_recentSessions.end());
+    RecentSession rs; rs.ip=ip; rs.name=ip; rs.lastConn=time(nullptr);
+    g_recentSessions.insert(g_recentSessions.begin(), rs);
+    if(g_recentSessions.size()>8) g_recentSessions.resize(8);
+    SaveConfig();
+    g_activeTab=1;  // switch to Sessões Recentes tab
+    if(g_mainWnd) InvalidateRect(g_mainWnd,nullptr,FALSE);
+}
+
+static void DoShare() {
+    char buf[256];
+    snprintf(buf,sizeof(buf),"IP: %s\nSenha: %s",g_localIP,g_sessionPass.c_str());
+    if(OpenClipboard(g_mainWnd)){
+        EmptyClipboard();
+        HGLOBAL hg=GlobalAlloc(GMEM_MOVEABLE,strlen(buf)+1);
+        if(hg){ memcpy(GlobalLock(hg),buf,strlen(buf)+1); GlobalUnlock(hg);
+                SetClipboardData(CF_TEXT,hg); }
+        CloseClipboard();
+    }
+    MessageBoxW(g_mainWnd,
+        L"Informações copiadas para a área de transferência!\n\n"
+        L"Compartilhe com o técnico para iniciar a sessão remota.",
+        L"Compartilhar Acesso",MB_OK|MB_ICONINFORMATION);
+}
+
 // ─── Connect ──────────────────────────────────────────────────────────────────
 static void RunDlgLoop(HWND dlg, HWND editCtrl, HWND disableParent); // defined below
-static void DoConnect(){
-    char ip[128]={},pass[65]={};
-    GetWindowTextA(g_editRemIP,ip,sizeof(ip));
-    // Password is taken from last field if any (pass field not shown on main UI)
-    // For now password is entered in the address bar or separately — use edit only for IP here
-    // Actually user enters IP in the address bar edit and password in a dialog if needed
-    // Let's prompt for password separately if needed
-    if(!ip[0]){MessageBoxA(g_mainWnd,"Digite o IP do host na barra de endereço.","Umbrela Viewer",MB_OK|MB_ICONWARNING);return;}
 
-    // Ask for password
+// Converts dotless numeric IP "192168110" → "192.168.1.10".
+// Passes dotted IPs and hostnames through unchanged.
+static std::string NormIP(const std::string& raw) {
+    if(raw.find('.')!=std::string::npos) return raw;
+    for(char c:raw) if(!isdigit((unsigned char)c)) return raw;
+    int len=(int)raw.size();
+    if(len<4||len>12) return raw;
+    // Greedy: longest first-two octets, shortest third+fourth (favors x.x.1.xx over x.x.11.x)
+    for(int i=std::min(3,len-3);i>=1;i--){
+        int a=std::stoi(raw.substr(0,i)); if(a>255) continue;
+        for(int j=std::min(3,len-i-2);j>=1;j--){
+            int b=std::stoi(raw.substr(i,j)); if(b>255) continue;
+            for(int k=1;k<=std::min(3,len-i-j-1);k++){
+                int c=std::stoi(raw.substr(i+j,k)); if(c>255) continue;
+                int dl=len-i-j-k; if(dl<1||dl>3) continue;
+                int d=std::stoi(raw.substr(i+j+k)); if(d>255) continue;
+                char buf[32]; snprintf(buf,sizeof(buf),"%d.%d.%d.%d",a,b,c,d);
+                return buf;
+            }
+        }
+    }
+    return raw;
+}
+
+static void DoConnect(){
+    char ipRaw[128]={};
+    GetWindowTextA(g_editRemIP,ipRaw,sizeof(ipRaw));
+    if(!ipRaw[0]){
+        MessageBoxW(g_mainWnd,L"Digite o IP do host na barra de endereço.",L"Umbrela Viewer",MB_OK|MB_ICONWARNING);
+        return;
+    }
+    std::string ip=NormIP(ipRaw);
+
+    // Ask for password (optional — empty = request access)
     g_dlgPassBuf[0]=0; g_dlgResultCode=IDCANCEL; g_dlgDone=false;
-    HWND dlg=CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,"UVDlg","Umbrela Viewer — Senha",
-        WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,250,200,320,148,nullptr,nullptr,g_hInst,nullptr);
+    HWND dlg=CreateWindowExW(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,L"UVDlg",L"Umbrela Viewer — Conectar",
+        WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,250,185,330,168,nullptr,nullptr,g_hInst,nullptr);
     HFONT hf=(HFONT)GetStockObject(DEFAULT_GUI_FONT);
     auto mkc=[&](const char*cls,const char*t,DWORD st,int x,int y,int w,int h,int id)->HWND{
         HWND c=CreateWindowA(cls,t,WS_CHILD|WS_VISIBLE|st,x,y,w,h,dlg,(HMENU)(intptr_t)id,g_hInst,nullptr);
         SendMessage(c,WM_SETFONT,(WPARAM)hf,TRUE);return c;
     };
-    mkc("STATIC","Senha do host:",SS_LEFT,10,10,290,18,0);
-    HWND editP=mkc("EDIT","",WS_BORDER|ES_PASSWORD|ES_AUTOHSCROLL,10,32,290,24,100);
-    mkc("BUTTON","Cancelar",BS_PUSHBUTTON,120,72,85,26,IDCANCEL);
-    mkc("BUTTON","Conectar",BS_DEFPUSHBUTTON,215,72,85,26,IDOK);
+    mkc("STATIC","Senha (opcional):",SS_LEFT,10,10,290,18,0);
+    HWND editP=mkc("EDIT","",WS_BORDER|ES_PASSWORD|ES_AUTOHSCROLL,10,32,244,24,100);
+    SendMessageW(editP,EM_SETCUEBANNER,TRUE,(LPARAM)L"Deixe vazio para solicitar acesso");
+    mkc("BUTTON","Mostrar",BS_PUSHBUTTON,258,32,52,24,200);
+    mkc("STATIC",
+        "Sem senha: o usuário do host precisará aceitar a conexão.",
+        SS_LEFT,10,62,300,28,0);
+    mkc("BUTTON","Cancelar",BS_PUSHBUTTON,120,98,90,26,IDCANCEL);
+    mkc("BUTTON","Conectar",BS_DEFPUSHBUTTON,220,98,90,26,IDOK);
     g_activeDlgEdit=editP; SetFocus(editP);
     RunDlgLoop(dlg,editP,g_mainWnd);
-    if(g_dlgResultCode!=IDOK||!g_dlgPassBuf[0]) return;
+    if(g_dlgResultCode!=IDOK) return;
 
-    SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
-    DWORD to=5000;setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&to,sizeof(to));
-    setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(char*)&to,sizeof(to));
-    sockaddr_in addr={};addr.sin_family=AF_INET;addr.sin_port=htons(DEFAULT_PORT);
-    if(inet_pton(AF_INET,ip,&addr.sin_addr)!=1){
-        MessageBoxA(g_mainWnd,"IP inválido.","Umbrela Viewer",MB_OK|MB_ICONWARNING);closesocket(s);return;
-    }
+    g_connectingIP = ip;   // saved so WM_CONNECT_OK can add to recent sessions
     EnableWindow(g_btnConnect,FALSE);
-    if(connect(s,(sockaddr*)&addr,sizeof(addr))!=0){
-        MessageBoxA(g_mainWnd,"Não foi possível conectar.","Umbrela Viewer",MB_OK|MB_ICONERROR);
-        EnableWindow(g_btnConnect,TRUE);closesocket(s);return;
-    }
-    ConnectRequestData crd={};strncpy_s(crd.password,g_dlgPassBuf,63);
-    PacketHeader req={PacketType::CONNECT_REQUEST,sizeof(crd)};
-    send(s,(char*)&req,sizeof(req),0);send(s,(char*)&crd,sizeof(crd),0);
-    PacketHeader resp={};
-    if(recv(s,(char*)&resp,sizeof(resp),MSG_WAITALL)!=sizeof(resp)||resp.type!=PacketType::CONNECT_ACCEPT){
-        MessageBoxA(g_mainWnd,resp.type==PacketType::CONNECT_DENY?"Senha incorreta.":"Sem resposta.","Umbrela Viewer",MB_OK|MB_ICONERROR);
-        EnableWindow(g_btnConnect,TRUE);closesocket(s);return;
-    }
-    DWORD noT=0;setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&noT,sizeof(noT));
-    setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(char*)&noT,sizeof(noT));
-    g_viewSock=s;g_viewRunning=g_viewConnected=true;
-    CreateViewerWindow();
-    std::thread(ViewRecvThread).detach();
-    PostMessage(g_viewerWnd,WM_VIEW_CONNECTED,0,0);
+
+    // TCP connection runs in background — avoids freezing the UI
+    struct ConnArgs { std::string ip; char pass[65]; };
+    auto* args=new ConnArgs; args->ip=ip; strncpy_s(args->pass,g_dlgPassBuf,64);
+
+    std::thread([](ConnArgs* a){
+        auto fail=[](const wchar_t* msg){
+            MessageBoxW(nullptr,msg,L"Umbrela Viewer",MB_OK|MB_ICONERROR);
+            if(g_mainWnd) PostMessage(g_mainWnd,WM_CONNECT_FAIL,0,0);
+        };
+
+        // Resolve address (handles both IPs and hostnames)
+        addrinfo hints={},*res=nullptr;
+        hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
+        char portStr[8]; snprintf(portStr,sizeof(portStr),"%d",DEFAULT_PORT);
+        if(getaddrinfo(a->ip.c_str(),portStr,&hints,&res)!=0||!res){
+            delete a; fail(L"Endereço inválido ou host não encontrado."); return;
+        }
+
+        SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+        if(s==INVALID_SOCKET){ freeaddrinfo(res); delete a; fail(L"Erro interno de socket."); return; }
+
+        // Non-blocking connect with 5-second timeout
+        u_long nb=1; ioctlsocket(s,FIONBIO,&nb);
+        connect(s,res->ai_addr,(int)res->ai_addrlen);
+        freeaddrinfo(res);
+
+        fd_set wr,ex; FD_ZERO(&wr); FD_ZERO(&ex); FD_SET(s,&wr); FD_SET(s,&ex);
+        timeval tv={5,0};
+        if(select(0,nullptr,&wr,&ex,&tv)<=0||FD_ISSET(s,&ex)){
+            closesocket(s); delete a;
+            fail(L"Não foi possível conectar ao host.\nVerifique o IP e se o programa está aberto no host.");
+            return;
+        }
+        int err=0,elen=sizeof(err);
+        getsockopt(s,SOL_SOCKET,SO_ERROR,(char*)&err,&elen);
+        if(err){ closesocket(s); delete a; fail(L"Não foi possível conectar ao host."); return; }
+
+        // Back to blocking with recv/send timeout
+        // If no password: 35s timeout (host user has 30s to accept/deny)
+        nb=0; ioctlsocket(s,FIONBIO,&nb);
+        bool noPass = (a->pass[0]=='\0');
+        DWORD to = noPass ? 35000u : 5000u;
+        setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&to,sizeof(to));
+        setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(char*)&to,sizeof(to));
+
+        ConnectRequestData crd={};
+        strncpy_s(crd.password,a->pass,63);
+        PacketHeader req={PacketType::CONNECT_REQUEST,sizeof(crd)};
+        send(s,(char*)&req,sizeof(req),0);
+        send(s,(char*)&crd,sizeof(crd),0);
+
+        PacketHeader resp={};
+        if(recv(s,(char*)&resp,sizeof(resp),MSG_WAITALL)!=sizeof(resp)||
+           resp.type!=PacketType::CONNECT_ACCEPT){
+            const wchar_t* msg=L"Sem resposta do servidor.";
+            if(resp.type==PacketType::CONNECT_DENY)
+                msg = noPass ? L"Acesso recusado pelo usuário." : L"Senha incorreta.";
+            else if(resp.type==PacketType::CONNECT_BUSY)
+                msg=L"Host ocupado. Aguarde a sessão atual terminar.";
+            closesocket(s); delete a; fail(msg); return;
+        }
+
+        // Connected — remove timeouts and hand socket to viewer
+        DWORD noT=0;
+        setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&noT,sizeof(noT));
+        setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(char*)&noT,sizeof(noT));
+        delete a;
+        if(g_mainWnd) PostMessage(g_mainWnd,WM_CONNECT_OK,(WPARAM)s,0);
+    },args).detach();
 }
 
-// ─── Self-install (C:\Program Files, todos os usuários, UAC) ─────────────────
-static std::string GetInstallDir() {
+// ─── Install helpers ──────────────────────────────────────────────────────────
+// "Todos os usuários" → C:\Program Files\UmbrelaViewer  (precisa de admin)
+static std::string GetAllUsersInstallDir() {
     char buf[MAX_PATH];
     SHGetFolderPathA(nullptr,CSIDL_PROGRAM_FILES,nullptr,0,buf);
     return std::string(buf)+"\\UmbrelaViewer";
 }
-static std::string GetInstallExe() { return GetInstallDir()+"\\UmbrelaViewer.exe"; }
-
-static bool IsRunningFromInstallDir() {
-    char my[MAX_PATH]; GetModuleFileNameA(nullptr,my,MAX_PATH);
-    return _stricmp(my,GetInstallExe().c_str())==0;
+static std::string GetAllUsersInstallExe() {
+    return GetAllUsersInstallDir()+"\\UmbrelaViewer.exe";
+}
+static bool IsInstalledForAllUsers() {
+    return GetFileAttributesA(GetAllUsersInstallExe().c_str())!=INVALID_FILE_ATTRIBUTES;
 }
 
-static bool IsRunningAsAdmin() {
-    BOOL isAdmin=FALSE;
-    PSID adminGroup=nullptr;
-    SID_IDENTIFIER_AUTHORITY ntAuth=SECURITY_NT_AUTHORITY;
-    if(AllocateAndInitializeSid(&ntAuth,2,SECURITY_BUILTIN_DOMAIN_RID,
-            DOMAIN_ALIAS_RID_ADMINS,0,0,0,0,0,0,&adminGroup)){
-        CheckTokenMembership(nullptr,adminGroup,&isAdmin);
-        FreeSid(adminGroup);
-    }
-    return isAdmin==TRUE;
-}
-
-static bool DoInstall() {
-    // Create install dir and copy exe
+// Chamado em instância elevada (/install-all): executa instalação real
+static void DoInstallAllUsersNow() {
     std::error_code ec;
-    std::filesystem::create_directories(GetInstallDir(),ec);
-    if(ec) return false;
+    std::filesystem::create_directories(GetAllUsersInstallDir(),ec);
     char src[MAX_PATH]; GetModuleFileNameA(nullptr,src,MAX_PATH);
-    if(!CopyFileA(src,GetInstallExe().c_str(),FALSE)) return false;
-
-    // Autorun — HKLM para todos os usuários
+    std::string dst=GetAllUsersInstallExe();
+    // Se arquivo existe e está em uso, renomeia o antigo e copia o novo
+    if(!CopyFileA(src,dst.c_str(),FALSE)){
+        std::string bak=dst+".bak";
+        MoveFileExA(dst.c_str(),bak.c_str(),MOVEFILE_REPLACE_EXISTING);
+        CopyFileA(src,dst.c_str(),FALSE);
+    }
+    // Autorun HKLM — todos os usuários
     HKEY key;
     if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,
             "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
             0,KEY_SET_VALUE,&key)==ERROR_SUCCESS){
-        std::string val="\""+GetInstallExe()+"\"";
+        std::string val="\""+dst+"\"";
         RegSetValueExA(key,"UmbrelaViewer",0,REG_SZ,(BYTE*)val.c_str(),(DWORD)val.size()+1);
         RegCloseKey(key);
     }
-
-    // Atalho na Área de Trabalho pública (todos os usuários)
+    // Atalho Desktop público
     CoInitialize(nullptr);
-    IShellLinkA*psl=nullptr;
-    if(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_IShellLinkA,(void**)&psl))){
-        psl->SetPath(GetInstallExe().c_str());
+    IShellLinkA* psl=nullptr;
+    if(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,
+            IID_IShellLinkA,(void**)&psl))){
+        psl->SetPath(dst.c_str());
         psl->SetDescription("Umbrela Viewer");
-        psl->SetIconLocation(GetInstallExe().c_str(),0);
-        IPersistFile*ppf=nullptr;
+        psl->SetIconLocation(dst.c_str(),0);
+        IPersistFile* ppf=nullptr;
         if(SUCCEEDED(psl->QueryInterface(IID_IPersistFile,(void**)&ppf))){
             char desk[MAX_PATH];
             SHGetFolderPathA(nullptr,CSIDL_COMMON_DESKTOPDIRECTORY,nullptr,0,desk);
@@ -735,78 +1018,218 @@ static bool DoInstall() {
         psl->Release();
     }
     CoUninitialize();
-    return true;
+    // Lança versão instalada
+    ShellExecuteA(nullptr,"open",dst.c_str(),nullptr,nullptr,SW_SHOW);
 }
 
-// ─── App icon — umbrella + monitor + cursor ──────────────────────────────────
-static HICON CreateAppIcon(int sz){
-    HDC dc=GetDC(nullptr),mdc=CreateCompatibleDC(dc);
-    HBITMAP bmp=CreateCompatibleBitmap(dc,sz,sz);
-    HBITMAP ob=(HBITMAP)SelectObject(mdc,bmp);
+// Botão "Instalar agora" — pede UAC e delega para instância elevada
+static void DoInstallAllUsers() {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr,exePath,MAX_PATH);
+    SHELLEXECUTEINFOA sei={};
+    sei.cbSize=sizeof(sei);
+    sei.lpVerb="runas";           // pede elevação (UAC)
+    sei.lpFile=exePath;
+    sei.lpParameters="/install-all";
+    sei.nShow=SW_SHOW;
+    ShellExecuteExA(&sei);
+    // Continua rodando sem instalar — usuário pode usar normalmente
+}
+
+// ─── Windows Service infrastructure ─────────────────────────────────────────
+static bool IsServiceInstalled() {
+    SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+    if (!hscm) return false;
+    SC_HANDLE hsvc = OpenServiceW(hscm, SVC_NAMEW, SERVICE_QUERY_STATUS);
+    bool r = (hsvc != nullptr);
+    if (hsvc) CloseServiceHandle(hsvc);
+    CloseServiceHandle(hscm);
+    return r;
+}
+
+static bool IsServiceRunning() {
+    SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+    if (!hscm) return false;
+    SC_HANDLE hsvc = OpenServiceW(hscm, SVC_NAMEW, SERVICE_QUERY_STATUS);
+    bool r = false;
+    if (hsvc) {
+        SERVICE_STATUS ss = {};
+        if (QueryServiceStatus(hsvc, &ss))
+            r = (ss.dwCurrentState == SERVICE_RUNNING || ss.dwCurrentState == SERVICE_START_PENDING);
+        CloseServiceHandle(hsvc);
+    }
+    CloseServiceHandle(hscm);
+    return r;
+}
+
+static VOID WINAPI SvcCtrlHandler(DWORD ctrl) {
+    if (ctrl == SERVICE_CONTROL_STOP || ctrl == SERVICE_CONTROL_SHUTDOWN) {
+        g_svcStatus.dwCurrentState = SERVICE_STOP_PENDING;
+        g_svcStatus.dwWaitHint     = 5000;
+        SetServiceStatus(g_svcHandle, &g_svcStatus);
+        if (g_svcStopEvt) SetEvent(g_svcStopEvt);
+    }
+}
+
+static VOID WINAPI ServiceMain(DWORD /*argc*/, LPSTR* /*argv*/) {
+    g_svcHandle = RegisterServiceCtrlHandlerA(SVC_NAME, SvcCtrlHandler);
+    if (!g_svcHandle) return;
+
+    g_svcStatus.dwServiceType      = SERVICE_WIN32_OWN_PROCESS;
+    g_svcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    g_svcStatus.dwCurrentState     = SERVICE_START_PENDING;
+    g_svcStatus.dwWaitHint         = 8000;
+    SetServiceStatus(g_svcHandle, &g_svcStatus);
+
+    // ── Connect SYSTEM process to the interactive window station ──────────
+    HWINSTA hWinSta = OpenWindowStationW(L"WinSta0", FALSE, WINSTA_ALL_ACCESS);
+    if (hWinSta) SetProcessWindowStation(hWinSta);
+
+    // ── Init subsystems ──────────────────────────────────────────────────
+    WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
+    Gdiplus::GdiplusStartup(&g_gdipToken, &g_gdip, nullptr);
+
+    LoadConfig();
+    GetLocalIP();
+    g_sessionPass  = GeneratePassword();
+    g_accessEvent  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_svcStopEvt   = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_runningAsService = true;
+
+    g_svcStatus.dwCurrentState = SERVICE_RUNNING;
+    g_svcStatus.dwWaitHint     = 0;
+    SetServiceStatus(g_svcHandle, &g_svcStatus);
+
+    StartHosting();
+
+    WaitForSingleObject(g_svcStopEvt, INFINITE);
+
+    StopHosting();
+    WSACleanup();
+    Gdiplus::GdiplusShutdown(g_gdipToken);
+    if (g_accessEvent) { CloseHandle(g_accessEvent); g_accessEvent = nullptr; }
+    if (g_svcStopEvt)  { CloseHandle(g_svcStopEvt);  g_svcStopEvt  = nullptr; }
+
+    g_svcStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(g_svcHandle, &g_svcStatus);
+}
+
+// Elevated helper: actually create / delete the service entry
+static void InstallServiceNow() {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+
+    SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
+    if (!hscm) {
+        MessageBoxW(nullptr,
+            L"Falha ao abrir o Gerenciador de Serviços.\n"
+            L"São necessários privilégios de administrador.",
+            L"Umbrela Viewer", MB_OK|MB_ICONERROR);
+        return;
+    }
+    std::string cmd = std::string("\"") + exePath + "\" /service";
+
+    SC_HANDLE hsvc = CreateServiceA(hscm, SVC_NAME,
+        "Umbrela Viewer Remote Access",
+        SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+        SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+        cmd.c_str(), nullptr, nullptr, nullptr,
+        "LocalSystem", nullptr);
+
+    if (hsvc) {
+        SERVICE_DESCRIPTIONW sd = { (LPWSTR)SVC_DESCW };
+        ChangeServiceConfig2W(hsvc, SERVICE_CONFIG_DESCRIPTION, &sd);
+        StartService(hsvc, 0, nullptr);
+        CloseServiceHandle(hsvc);
+        MessageBoxW(nullptr,
+            L"Serviço instalado e iniciado!\n\n"
+            L"O Umbrela Viewer agora captura a tela em segundo plano,\n"
+            L"incluindo prompts de UAC e a tela de logon.",
+            L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
+    } else {
+        DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_EXISTS)
+            MessageBoxW(nullptr, L"O serviço já está instalado.", L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
+        else {
+            wchar_t msg[256];
+            swprintf_s(msg, L"Falha ao instalar o serviço.\nCódigo de erro: %lu", err);
+            MessageBoxW(nullptr, msg, L"Umbrela Viewer", MB_OK|MB_ICONERROR);
+        }
+    }
+    CloseServiceHandle(hscm);
+}
+
+static void UninstallServiceNow() {
+    SC_HANDLE hscm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+    if (!hscm) {
+        MessageBoxW(nullptr, L"Falha ao abrir o Gerenciador de Serviços.",
+            L"Umbrela Viewer", MB_OK|MB_ICONERROR);
+        return;
+    }
+    SC_HANDLE hsvc = OpenServiceW(hscm, SVC_NAMEW, SERVICE_STOP|DELETE|SERVICE_QUERY_STATUS);
+    if (hsvc) {
+        SERVICE_STATUS ss = {};
+        ControlService(hsvc, SERVICE_CONTROL_STOP, &ss);
+        // Give it up to 3s to stop
+        for (int i = 0; i < 30; i++) {
+            QueryServiceStatus(hsvc, &ss);
+            if (ss.dwCurrentState == SERVICE_STOPPED) break;
+            Sleep(100);
+        }
+        DeleteService(hsvc);
+        CloseServiceHandle(hsvc);
+        MessageBoxW(nullptr, L"Serviço removido com sucesso.",
+            L"Umbrela Viewer", MB_OK|MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(nullptr, L"Serviço não encontrado.", L"Umbrela Viewer", MB_OK|MB_ICONWARNING);
+    }
+    CloseServiceHandle(hscm);
+}
+
+// UI-side launchers — request UAC elevation for install/uninstall
+static void DoInstallService() {
+    char exePath[MAX_PATH]; GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    SHELLEXECUTEINFOA sei = {}; sei.cbSize = sizeof(sei);
+    sei.lpVerb = "runas"; sei.lpFile = exePath;
+    sei.lpParameters = "/install-service"; sei.nShow = SW_SHOW;
+    ShellExecuteExA(&sei);
+    // Refresh the card after a short delay so the status reflects the change
+    if (g_mainWnd) {
+        std::thread([]{ Sleep(2500); if(g_mainWnd) InvalidateRect(g_mainWnd,nullptr,FALSE); }).detach();
+    }
+}
+static void DoUninstallService() {
+    char exePath[MAX_PATH]; GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    SHELLEXECUTEINFOA sei = {}; sei.cbSize = sizeof(sei);
+    sei.lpVerb = "runas"; sei.lpFile = exePath;
+    sei.lpParameters = "/uninstall-service"; sei.nShow = SW_SHOW;
+    ShellExecuteExA(&sei);
+    if (g_mainWnd) {
+        std::thread([]{ Sleep(2500); if(g_mainWnd) InvalidateRect(g_mainWnd,nullptr,FALSE); }).detach();
+    }
+}
+
+// ─── App icon — UV monitor badge ─────────────────────────────────────────────
+static HICON CreateAppIcon(int sz) {
+    HDC dc = GetDC(nullptr), mdc = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, sz, sz);
+    HBITMAP ob  = (HBITMAP)SelectObject(mdc, bmp);
+
     Gdiplus::Graphics g(mdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-    float s=(float)sz, cx=s*0.5f;
+    // Black fill for the mask region outside the circle
+    Gdiplus::SolidBrush black(Gdiplus::Color(255, 0, 0, 0));
+    g.FillRectangle(&black, 0.f, 0.f, (float)sz, (float)sz);
 
-    // Black fill
-    Gdiplus::SolidBrush bkg(Gdiplus::Color(255,0,0,0));
-    g.FillRectangle(&bkg,0.f,0.f,s,s);
+    DrawIconContent(g, 0.f, 0.f, (float)sz, true);
 
-    // Dark circle background
-    Gdiplus::SolidBrush bgc(Gdiplus::Color(255,5,10,40));
-    g.FillEllipse(&bgc,s*0.03f,s*0.03f,s*0.94f,s*0.94f);
-
-    // Outer blue glow
-    Gdiplus::Pen glow(Gdiplus::Color(90,20,70,255),s*0.10f);
-    g.DrawEllipse(&glow,s*0.04f,s*0.04f,s*0.92f,s*0.92f);
-
-    // Main ring
-    Gdiplus::Pen ring(Gdiplus::Color(230,30,110,255),s*0.048f);
-    g.DrawEllipse(&ring,s*0.06f,s*0.06f,s*0.88f,s*0.88f);
-
-    // Inner ring highlight
-    Gdiplus::Pen rhi(Gdiplus::Color(140,100,170,255),s*0.022f);
-    g.DrawEllipse(&rhi,s*0.09f,s*0.09f,s*0.82f,s*0.82f);
-
-    // Umbrella dome arc
-    Gdiplus::Pen udome(Gdiplus::Color(245,150,205,255),s*0.072f);
-    udome.SetLineCap(Gdiplus::LineCapRound,Gdiplus::LineCapRound,Gdiplus::DashCapRound);
-    g.DrawArc(&udome,s*0.16f,s*0.10f,s*0.68f,s*0.46f,180.f,180.f);
-
-    // Umbrella spokes (subtle, lighter)
-    Gdiplus::Pen spoke(Gdiplus::Color(120,110,170,255),s*0.028f);
-    spoke.SetLineCap(Gdiplus::LineCapRound,Gdiplus::LineCapRound,Gdiplus::DashCapRound);
-    g.DrawLine(&spoke,cx,s*0.33f,cx-s*0.21f,s*0.53f);
-    g.DrawLine(&spoke,cx,s*0.33f,cx+s*0.21f,s*0.53f);
-
-    // Pole
-    Gdiplus::Pen pole(Gdiplus::Color(225,125,188,255),s*0.052f);
-    pole.SetLineCap(Gdiplus::LineCapRound,Gdiplus::LineCapRound,Gdiplus::DashCapRound);
-    g.DrawLine(&pole,cx,s*0.33f,cx,s*0.57f);
-
-    // Monitor body
-    Gdiplus::Pen monp(Gdiplus::Color(230,75,150,245),s*0.05f);
-    float mw=s*0.42f,mh=s*0.26f,mx=cx-mw*0.5f,my=s*0.57f;
-    g.DrawRectangle(&monp,mx,my,mw,mh);
-
-    // Screen fill
-    Gdiplus::SolidBrush scr(Gdiplus::Color(70,20,55,150));
-    g.FillRectangle(&scr,mx+s*0.02f,my+s*0.02f,mw-s*0.04f,mh-s*0.04f);
-
-    // Monitor stand
-    g.DrawLine(&monp,cx,my+mh,cx,my+mh+s*0.065f);
-    g.DrawLine(&monp,cx-s*0.10f,my+mh+s*0.065f,cx+s*0.10f,my+mh+s*0.065f);
-
-    // Cursor arrow (triangle) in monitor
-    Gdiplus::SolidBrush cur(Gdiplus::Color(245,180,225,255));
-    float arx=cx-s*0.055f,ary=my+s*0.03f,aw=s*0.10f,ah=s*0.15f;
-    Gdiplus::PointF pts[3]={{arx,ary},{arx,ary+ah},{arx+aw,ary+ah*0.64f}};
-    g.FillPolygon(&cur,pts,3);
-
-    SelectObject(mdc,ob);DeleteDC(mdc);ReleaseDC(nullptr,dc);
-    HBITMAP mask=CreateBitmap(sz,sz,1,1,nullptr);
-    ICONINFO ii={};ii.fIcon=TRUE;ii.hbmColor=bmp;ii.hbmMask=mask;
-    HICON ico=CreateIconIndirect(&ii);DeleteObject(bmp);DeleteObject(mask);
+    SelectObject(mdc, ob); DeleteDC(mdc); ReleaseDC(nullptr, dc);
+    HBITMAP mask = CreateBitmap(sz, sz, 1, 1, nullptr);
+    ICONINFO ii = {}; ii.fIcon = TRUE; ii.hbmColor = bmp; ii.hbmMask = mask;
+    HICON ico = CreateIconIndirect(&ii);
+    DeleteObject(bmp); DeleteObject(mask);
     return ico;
 }
 
@@ -818,156 +1241,465 @@ static void PaintMain(HWND hw, HDC hdc){
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-
-    // ── Reset virtual buttons ─────────────────────────────────────────────
     VBClear();
 
-    // ── [1] Toolbar (0..TOOL_H) ───────────────────────────────────────────
-    Gdiplus::SolidBrush tbBrush(C::TOOLBAR);
-    g.FillRectangle(&tbBrush,0,0,W,TOOL_H);
-
-    // Umbrela Viewer logo in toolbar
-    DrawUmbrelaIcon(g,12.f,9.f,30.f);
-
-    // "UMBRELA" + "VIEWER" title
-    Gdiplus::FontFamily ff(L"Segoe UI");
-    Gdiplus::Font fntBold(&ff,15,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+    // ── Fonts ─────────────────────────────────────────────────────────────────
+    Gdiplus::FontFamily ff    (L"Segoe UI");
+    Gdiplus::FontFamily ffMono(L"Consolas");
+    Gdiplus::Font fntBold(&ff,13,Gdiplus::FontStyleBold,   Gdiplus::UnitPixel);
     Gdiplus::Font fntNorm(&ff,13,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush wBrush(C::TEXT);
+    Gdiplus::Font fntSm  (&ff,11,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+    Gdiplus::Font fntTiny(&ff,10,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+    Gdiplus::SolidBrush wBrush (C::TEXT);
     Gdiplus::SolidBrush w2Brush(C::TEXT2);
-    g.DrawString(L"UMBRELA",-1,&fntBold,Gdiplus::PointF(50.f,11.f),&wBrush);
-    g.DrawString(L"VIEWER",-1,&fntNorm,Gdiplus::PointF(50.f,30.f),&w2Brush);
-
-    // Hamburger button
-    bool hambHot = (g_hotBtn==VB_HAMBURGER);
-    if(hambHot||g_dnBtn==VB_HAMBURGER){
-        Gdiplus::SolidBrush hbg(hambHot?Gdiplus::Color(40,255,255,255):Gdiplus::Color(20,255,255,255));
-        FillRR(g,(float)(W-44),(float)7,36.f,36.f,6.f,hbg);
-    }
-    DrawHamburger(g,W-26,25,hambHot);
-    VBAdd(VB_HAMBURGER,W-44,7,36,36);
-
-    // ── [2] Address bar (ADDR_Y..ADDR_Y+ADDR_H) ──────────────────────────
     Gdiplus::SolidBrush bgBrush(C::BG);
-    g.FillRectangle(&bgBrush,0.f,(float)ADDR_Y,(float)W,(float)ADDR_H);
 
-    // Address box (drawn, edit control floats inside)
-    bool addrFocus = (GetFocus()==g_editRemIP);
-    Gdiplus::SolidBrush addrBg(C::ADDRBOX);
-    FillRR(g,12.f,ADDR_Y+10.f,(float)(W-24),36.f,6.f,addrBg);
-    Gdiplus::Pen borderPen(addrFocus?C::BDRHI:C::BORDER,1.2f);
-    StrokeRR(g,12.f,ADDR_Y+10.f,(float)(W-24),36.f,6.f,borderPen);
-
-    // Monitor/screen icon inside address box
-    Gdiplus::SolidBrush icoBrush(C::TEXT2);
-    g.DrawString(L"🖥",-1,&fntNorm,Gdiplus::PointF(20.f,ADDR_Y+16.f),&icoBrush);
-
-    // Connect arrow button (right side of address box)
-    bool connHot=(g_hotBtn==VB_CONNECT),connDn=(g_dnBtn==VB_CONNECT);
-    Gdiplus::Color btnCol=connDn?C::BTNDN:(connHot?C::BTNHOV:C::BTNBG);
-    Gdiplus::SolidBrush btnBrush(btnCol);
-    FillRR(g,(float)(W-58),ADDR_Y+11.f,44.f,34.f,5.f,btnBrush);
-
-    Gdiplus::Font fntBtn(&ff,15,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush arrowBrush(Gdiplus::Color(255,255,255,255));
-    Gdiplus::StringFormat sfC;sfC.SetAlignment(Gdiplus::StringAlignmentCenter);sfC.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    Gdiplus::RectF btnRect((float)(W-58),ADDR_Y+11.f,44.f,34.f);
-    g.DrawString(L"→",-1,&fntBtn,btnRect,&sfC,&arrowBrush);
-    VBAdd(VB_CONNECT,W-58,ADDR_Y+11,44,34);
-
-    // ── [3] Thin separator ───────────────────────────────────────────────
-    Gdiplus::Pen sepPen(C::SEP,1.0f);
-    g.DrawLine(&sepPen,0.f,(float)HERO_Y,(float)W,(float)HERO_Y);
-
-    // ── [4] Hero card ────────────────────────────────────────────────────
-    g.FillRectangle(&bgBrush,0.f,(float)HERO_Y,(float)W,(float)HERO_H);
-
-    // Card inset
-    Gdiplus::SolidBrush cardBrush(C::CARD);
-    FillRR(g,14.f,(float)(HERO_Y+12),(float)(W-28),HERO_H-22.f,8.f,cardBrush);
-    Gdiplus::Pen cardPen(C::BORDER,1.0f);
-    StrokeRR(g,14.f,(float)(HERO_Y+12),(float)(W-28),HERO_H-22.f,8.f,cardPen);
-
-    // "Este dispositivo"
-    Gdiplus::Font fntSm(&ff,11,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
-    g.DrawString(L"Este dispositivo",-1,&fntSm,Gdiplus::PointF((float)(W/2-56),(float)(HERO_Y+22)),&w2Brush);
-
-    // ── IP address (large, colored) ───────────────────────────────────────
-    wchar_t wipW[64]; MultiByteToWideChar(CP_ACP,0,g_localIP,-1,wipW,64);
-    Gdiplus::Font fntIP(&ff,32,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush ipBrush(C::IP);
-    // Measure and center
-    Gdiplus::RectF ipMeasure;
-    g.MeasureString(wipW,-1,&fntIP,Gdiplus::PointF(0,0),&ipMeasure);
-    float ipX = (W-ipMeasure.Width)/2.f;
-    g.DrawString(wipW,-1,&fntIP,Gdiplus::PointF(ipX,(float)(HERO_Y+40)),&ipBrush);
-
-    // Copy IP button (small, subtle)
-    bool cpHot=(g_hotBtn==VB_COPY_IP);
-    Gdiplus::Color cpCol=cpHot?Gdiplus::Color(50,255,255,255):Gdiplus::Color(20,255,255,255);
-    Gdiplus::SolidBrush cpBrush(cpCol);
-    float cpX=ipX+ipMeasure.Width+6.f;
-    float cpY=(float)(HERO_Y+45);
-    FillRR(g,cpX,cpY,28.f,22.f,4.f,cpBrush);
-    Gdiplus::Font fntTiny(&ff,12,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
-    g.DrawString(L"⧉",-1,&fntTiny,Gdiplus::PointF(cpX+5.f,cpY+3.f),&w2Brush);
-    VBAdd(VB_COPY_IP,(int)cpX,(int)cpY,28,22);
-
-    // ── Separator line ───────────────────────────────────────────────────
-    Gdiplus::Pen divPen(C::SEP,1.0f);
-    g.DrawLine(&divPen,28.f,(float)(HERO_Y+100),(float)(W-28),(float)(HERO_Y+100));
-
-    // ── Password row ─────────────────────────────────────────────────────
-    float passRowY = (float)(HERO_Y+114);
-
-    // Lock icon
-    DrawLock(g,28.f,passRowY+1,16.f,C::TEXT2);
-
-    // "Senha:" label
-    g.DrawString(L"Senha:",-1,&fntSm,Gdiplus::PointF(50.f,passRowY+2),&w2Brush);
-
-    // Password value
+    // ── Shared data strings ───────────────────────────────────────────────────
+    wchar_t wipW[64]={};
+    MultiByteToWideChar(CP_UTF8,0,g_localIP,-1,wipW,64);
     wchar_t wpass[16]={};
-    MultiByteToWideChar(CP_ACP,0,g_sessionPass.c_str(),-1,wpass,16);
-    Gdiplus::Font fntPass(&ff,22,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush passBrush(C::PASS);
-    g.DrawString(wpass,-1,&fntPass,Gdiplus::PointF(100.f,passRowY-2),&passBrush);
+    MultiByteToWideChar(CP_UTF8,0,g_sessionPass.c_str(),-1,wpass,16);
 
-    // Regen button
-    bool rgHot=(g_hotBtn==VB_REGEN_PASS);
-    Gdiplus::Color rgCol=rgHot?Gdiplus::Color(50,255,255,255):Gdiplus::Color(25,255,255,255);
-    Gdiplus::SolidBrush rgBrush(rgCol);
-    float rgX=(float)(W-110), rgY=passRowY;
-    FillRR(g,rgX,rgY,44.f,24.f,5.f,rgBrush);
-    g.DrawString(L"↻ Nova",-1,&fntTiny,Gdiplus::PointF(rgX+4.f,rgY+5.f),&w2Brush);
-    VBAdd(VB_REGEN_PASS,(int)rgX,(int)rgY,44,24);
+    // ── Background + radial glows ─────────────────────────────────────────────
+    g.FillRectangle(&bgBrush,0.f,0.f,(float)W,(float)WIN_H);
+    // Top-right: blue glow (circle at 80%,-10%)
+    {
+        Gdiplus::GraphicsPath path;
+        float r=W*0.38f, cx=W*0.80f, cy=-WIN_H*0.08f;
+        path.AddEllipse(cx-r,cy-r,r*2,r*2);
+        Gdiplus::PathGradientBrush pgb(&path);
+        pgb.SetCenterColor(Gdiplus::Color(40,37,99,235));
+        int n=1; Gdiplus::Color edge(0,37,99,235);
+        pgb.SetSurroundColors(&edge,&n);
+        g.FillPath(&pgb,&path);
+    }
+    // Top-left: cyan glow (circle at 20%,18%)
+    {
+        Gdiplus::GraphicsPath path;
+        float r=W*0.32f, cx=W*0.18f, cy=WIN_H*0.18f;
+        path.AddEllipse(cx-r,cy-r,r*2,r*2);
+        Gdiplus::PathGradientBrush pgb(&path);
+        pgb.SetCenterColor(Gdiplus::Color(20,34,211,238));
+        int n=1; Gdiplus::Color edge(0,34,211,238);
+        pgb.SetSurroundColors(&edge,&n);
+        g.FillPath(&pgb,&path);
+    }
 
-    // Settings button
-    bool stHot=(g_hotBtn==VB_SETTINGS);
-    Gdiplus::Color stCol=stHot?Gdiplus::Color(50,255,255,255):Gdiplus::Color(25,255,255,255);
-    Gdiplus::SolidBrush stBrush(stCol);
-    float stX=(float)(W-62), stY=passRowY;
-    FillRR(g,stX,stY,44.f,24.f,5.f,stBrush);
-    g.DrawString(L"⚙ Menu",-1,&fntTiny,Gdiplus::PointF(stX+3.f,stY+5.f),&w2Brush);
-    VBAdd(VB_SETTINGS,(int)stX,(int)stY,44,24);
+    // ── [1] Navbar (glass dark, border-radius bottom) ─────────────────────
+    {
+        // Semi-transparent dark gradient
+        Gdiplus::LinearGradientBrush navGr(
+            Gdiplus::PointF(0.f,0.f), Gdiplus::PointF(0.f,(float)(TOOL_H+14)),
+            Gdiplus::Color(210,10,16,32), Gdiplus::Color(210,15,23,42));
+        // Extend 14px past TOOL_H so top corners are clipped → bottom-only-radius effect
+        FillRR(g,0.f,-14.f,(float)W,(float)(TOOL_H+14),14.f,navGr);
+        Gdiplus::Pen navBorder(C::BORDER,1.f);
+        g.DrawLine(&navBorder,0.f,(float)TOOL_H,(float)W,(float)TOOL_H);
 
-    // ── Status row ───────────────────────────────────────────────────────
-    float statusY=(float)(HERO_Y+155);
-    Gdiplus::Color dotColor = g_srvConnected?C::GREEN:(g_srvRunning?C::YELLOW:C::TEXT2);
-    DrawCircle(g,30.f,statusY+7,5.f,dotColor);
+        DrawUmbrelaIcon(g,14.f,7.f,32.f);
+        Gdiplus::Font fntBrand(&ff,15,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+        g.DrawString(L"UMBRELA",-1,&fntBrand,Gdiplus::PointF(55.f,9.f),&wBrush);
+        Gdiplus::Font fntSub(&ff,12,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush cyanBr(C::PRIMARY2);
+        g.DrawString(L"VIEWER",-1,&fntSub,Gdiplus::PointF(55.f,27.f),&cyanBr);
 
-    const wchar_t* statusText = g_srvConnected?L"Conectado — sessão ativa":
-                                 g_srvRunning  ?L"Aguardando conexão...":L"Servidor parado";
-    g.DrawString(statusText,-1,&fntSm,Gdiplus::PointF(44.f,statusY+1),&w2Brush);
+        bool hambHot=(g_hotBtn==VB_HAMBURGER);
+        if(hambHot||g_dnBtn==VB_HAMBURGER){
+            Gdiplus::SolidBrush hbg(hambHot?Gdiplus::Color(50,255,255,255):Gdiplus::Color(22,255,255,255));
+            FillRR(g,(float)(W-48),4.f,38.f,38.f,9.f,hbg);
+        }
+        DrawHamburger(g,W-29,23,hambHot);
+        VBAdd(VB_HAMBURGER,W-48,4,38,38);
+    }
 
-    // ── [5] Footer ───────────────────────────────────────────────────────
-    g.FillRectangle(&bgBrush,0.f,(float)FOOT_Y,(float)W,(float)FOOT_H);
-    Gdiplus::Pen footPen(C::SEP,1.0f);
-    g.DrawLine(&footPen,0.f,(float)FOOT_Y,(float)W,(float)FOOT_Y);
-    Gdiplus::Font fntFoot(&ff,10,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush footBrush(C::TEXT2);
-    g.DrawString(L"Compartilhe seu IP e senha com o técnico para iniciar a sessão.",
-                 -1,&fntFoot,Gdiplus::PointF(14.f,(float)(FOOT_Y+11)),&footBrush);
+    // ── [2] Connect box (glass, inner glow, gradient → button) ───────────
+    {
+        float bx=12.f, by=(float)(ADDR_Y+8), bw=(float)(W-24), bh=34.f;
+        bool addrFocus=(GetFocus()==g_editRemIP);
+
+        Gdiplus::SolidBrush boxBg(C::ADDRBOX);
+        FillRR(g,bx,by,bw,bh,12.f,boxBg);
+        // Inner inset glow
+        {
+            Gdiplus::SolidBrush ig(addrFocus?Gdiplus::Color(22,37,99,235):Gdiplus::Color(12,37,99,235));
+            FillRR(g,bx+1,by+1,bw-2,bh-2,11.f,ig);
+        }
+        Gdiplus::Pen boxBorder(addrFocus?C::BDRHI:C::BORDER,1.f);
+        StrokeRR(g,bx,by,bw,bh,12.f,boxBorder);
+
+        // → Connect button (gradient #2563EB → #22D3EE, 135deg)
+        bool connHot=(g_hotBtn==VB_CONNECT), connDn=(g_dnBtn==VB_CONNECT);
+        float cbx=(float)(W-64), cby=by+3.f, cbw=50.f, cbh=bh-6.f;
+        {
+            Gdiplus::Color c1=connDn?Gdiplus::Color(255,30,64,175):Gdiplus::Color(255,37,99,235);
+            Gdiplus::Color c2=connDn?Gdiplus::Color(255,20,40,120):
+                              connHot?Gdiplus::Color(255,34,211,238):Gdiplus::Color(255,14,165,233);
+            Gdiplus::LinearGradientBrush btnGr(
+                Gdiplus::PointF(cbx,cby),Gdiplus::PointF(cbx+cbw,cby+cbh),c1,c2);
+            FillRR(g,cbx,cby,cbw,cbh,9.f,btnGr);
+            if(!connDn){
+                Gdiplus::Pen glowPen(Gdiplus::Color(90,34,211,238),1.4f);
+                StrokeRR(g,cbx,cby,cbw,cbh,9.f,glowPen);
+            }
+        }
+        Gdiplus::Font fntArrow(&ff,16,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush arrowBr(Gdiplus::Color(255,255,255,255));
+        Gdiplus::StringFormat sfCtr;
+        sfCtr.SetAlignment(Gdiplus::StringAlignmentCenter);
+        sfCtr.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        g.DrawString(L"→",-1,&fntArrow,Gdiplus::RectF(cbx,cby,cbw,cbh),&sfCtr,&arrowBr);
+        VBAdd(VB_CONNECT,(int)cbx,(int)cby,(int)cbw,(int)cbh);
+    }
+
+    // ── [3] Hero card (2-col: IP | senha) ────────────────────────────────
+    {
+        float cX=12.f, cY=(float)(HERO_Y+8), cW=(float)(W-24), cH=(float)(HERO_H-14);
+        // Card gradient
+        Gdiplus::LinearGradientBrush cardGr(
+            Gdiplus::PointF(cX,cY), Gdiplus::PointF(cX+cW,cY+cH),
+            Gdiplus::Color(245,17,24,39), Gdiplus::Color(215,15,23,42));
+        FillRR(g,cX,cY,cW,cH,14.f,cardGr);
+        Gdiplus::Pen cardPen(C::BORDER,1.f);
+        StrokeRR(g,cX,cY,cW,cH,14.f,cardPen);
+
+        float halfW=cW*0.5f;
+        { Gdiplus::Pen sp(C::BORDER,1.f); g.DrawLine(&sp,cX+halfW,cY+14.f,cX+halfW,cY+cH-14.f); }
+
+        // LEFT — IP
+        {
+            Gdiplus::StringFormat sfCen; sfCen.SetAlignment(Gdiplus::StringAlignmentCenter);
+            g.DrawString(L"Este dispositivo",-1,&fntSm,
+                Gdiplus::RectF(cX,cY+8.f,halfW,16.f),&sfCen,&w2Brush);
+
+            // IP: 38px bold, cyan, glow layers
+            Gdiplus::Font fntIP(&ff,38,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+            Gdiplus::RectF ipMsr;
+            g.MeasureString(wipW,-1,&fntIP,Gdiplus::PointF(0,0),&ipMsr);
+            float ipX=cX+(halfW-ipMsr.Width)*0.5f, ipY=cY+26.f;
+            // Glow layers (3 passes with offset+alpha)
+            for(int d=1;d<=3;d++){
+                Gdiplus::SolidBrush gl(Gdiplus::Color((BYTE)(55/d),34,211,238));
+                g.DrawString(wipW,-1,&fntIP,Gdiplus::PointF(ipX+(float)d,ipY+(float)d),&gl);
+            }
+            Gdiplus::SolidBrush ipBr(C::IP);
+            g.DrawString(wipW,-1,&fntIP,Gdiplus::PointF(ipX,ipY),&ipBr);
+
+            // Copy button
+            bool cpHot=(g_hotBtn==VB_COPY_IP);
+            float cpX=cX+(halfW-80.f)*0.5f, cpY=cY+78.f;
+            Gdiplus::SolidBrush cpBg(cpHot?Gdiplus::Color(50,37,99,235):Gdiplus::Color(22,37,99,235));
+            FillRR(g,cpX,cpY,80.f,24.f,8.f,cpBg);
+            Gdiplus::Pen cpBorder(C::BORDER,1.f);
+            StrokeRR(g,cpX,cpY,80.f,24.f,8.f,cpBorder);
+            g.DrawString(L"⧉ Copiar",-1,&fntTiny,Gdiplus::PointF(cpX+11.f,cpY+5.f),&w2Brush);
+            VBAdd(VB_COPY_IP,(int)cpX,(int)cpY,80,24);
+        }
+
+        // RIGHT — Senha
+        {
+            float rx=cX+halfW+2.f, rw=halfW-2.f;
+            Gdiplus::StringFormat sfCen; sfCen.SetAlignment(Gdiplus::StringAlignmentCenter);
+            g.DrawString(L"Senha de sessão:",-1,&fntSm,
+                Gdiplus::RectF(rx,cY+8.f,rw,16.f),&sfCen,&w2Brush);
+
+            // Password badge: green border + bg + text
+            Gdiplus::Font fntPass(&ffMono,24,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+            Gdiplus::RectF pMsr;
+            g.MeasureString(wpass,-1,&fntPass,Gdiplus::PointF(0,0),&pMsr);
+            float bW=pMsr.Width+44.f, bH=44.f;
+            float bX=rx+(rw-bW)*0.5f, bY=cY+26.f;
+            Gdiplus::SolidBrush passBg(Gdiplus::Color(30,16,185,129));
+            FillRR(g,bX,bY,bW,bH,12.f,passBg);
+            Gdiplus::Pen passBdr(Gdiplus::Color(180,16,185,129),1.f);
+            StrokeRR(g,bX,bY,bW,bH,12.f,passBdr);
+            Gdiplus::SolidBrush passTxt(C::PASS);
+            Gdiplus::StringFormat sfPCen;
+            sfPCen.SetAlignment(Gdiplus::StringAlignmentCenter);
+            sfPCen.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            g.DrawString(wpass,-1,&fntPass,Gdiplus::RectF(bX,bY,bW,bH),&sfPCen,&passTxt);
+
+            // Buttons: Regen + Share (gradient)
+            float btnY=cY+80.f, cx2=rx+rw*0.5f;
+            {
+                bool rgHot=(g_hotBtn==VB_REGEN_PASS);
+                float rgX=cx2-88.f;
+                Gdiplus::SolidBrush rgBg(rgHot?Gdiplus::Color(50,226,232,240):Gdiplus::Color(20,226,232,240));
+                FillRR(g,rgX,btnY,78.f,24.f,8.f,rgBg);
+                Gdiplus::Pen rgBdr(C::BORDER,1.f);
+                StrokeRR(g,rgX,btnY,78.f,24.f,8.f,rgBdr);
+                g.DrawString(L"↻ Nova",-1,&fntTiny,Gdiplus::PointF(rgX+12.f,btnY+5.f),&w2Brush);
+                VBAdd(VB_REGEN_PASS,(int)rgX,(int)btnY,78,24);
+            }
+            {
+                bool shHot=(g_hotBtn==VB_SHARE);
+                float shX=cx2-2.f;
+                Gdiplus::Color sh1=shHot?Gdiplus::Color(255,37,99,235):Gdiplus::Color(200,37,99,235);
+                Gdiplus::Color sh2=shHot?Gdiplus::Color(255,34,211,238):Gdiplus::Color(180,14,116,144);
+                Gdiplus::LinearGradientBrush shGr(
+                    Gdiplus::PointF(shX,btnY),Gdiplus::PointF(shX+88.f,btnY+24.f),sh1,sh2);
+                FillRR(g,shX,btnY,88.f,24.f,8.f,shGr);
+                Gdiplus::SolidBrush shTxt(C::TEXT);
+                g.DrawString(L"↗ Compartilhar",-1,&fntTiny,Gdiplus::PointF(shX+6.f,btnY+5.f),&shTxt);
+                VBAdd(VB_SHARE,(int)shX,(int)btnY,88,24);
+            }
+        }
+
+        // Status row
+        {
+            float stLineY=cY+cH-28.f;
+            Gdiplus::Pen stSep(C::BORDER,1.f);
+            g.DrawLine(&stSep,cX+10.f,stLineY,cX+cW-10.f,stLineY);
+            float stY=stLineY+7.f;
+            Gdiplus::Color dotCol=g_srvConnected?C::GREEN:(g_srvRunning?C::YELLOW:C::TEXT2);
+            // 14px dot + double-layer glow
+            float dcx=cX+24.f, dcy=stY+7.f, dr=7.f;
+            if(g_srvConnected||g_srvRunning){
+                Gdiplus::SolidBrush h1(Gdiplus::Color(70,dotCol.GetR(),dotCol.GetG(),dotCol.GetB()));
+                Gdiplus::SolidBrush h2(Gdiplus::Color(35,dotCol.GetR(),dotCol.GetG(),dotCol.GetB()));
+                g.FillEllipse(&h2,dcx-dr*2.4f,dcy-dr*2.4f,dr*4.8f,dr*4.8f);
+                g.FillEllipse(&h1,dcx-dr*1.6f,dcy-dr*1.6f,dr*3.2f,dr*3.2f);
+            }
+            Gdiplus::SolidBrush dotBr(dotCol);
+            g.FillEllipse(&dotBr,dcx-dr,dcy-dr,dr*2,dr*2);
+            const wchar_t* stTxt=g_srvConnected?L"Sessão ativa — cliente conectado":
+                                  g_srvRunning  ?L"Aguardando conexão...":L"Servidor parado";
+            g.DrawString(stTxt,-1,&fntSm,Gdiplus::PointF(cX+40.f,stY+2.f),&w2Brush);
+        }
+    }
+
+    // ── [4] Tab bar ───────────────────────────────────────────────────────
+    {
+        g.FillRectangle(&bgBrush,0.f,(float)TAB_Y,(float)W,(float)TAB_H);
+        Gdiplus::Pen tabBotPen(C::BORDER,1.f);
+        g.DrawLine(&tabBotPen,0.f,(float)(TAB_Y+TAB_H-1),(float)W,(float)(TAB_Y+TAB_H-1));
+
+        const wchar_t* tabLabels[]={ L"Início", L"Sessões Recentes" };
+        int tabIds[]={ VB_TAB_HOME, VB_TAB_RECENT };
+        float tx=16.f;
+        for(int i=0;i<2;i++){
+            bool active=(g_activeTab==i);
+            Gdiplus::Font& tfnt=active?fntBold:fntNorm;
+            Gdiplus::RectF tMsr;
+            g.MeasureString(tabLabels[i],-1,&tfnt,Gdiplus::PointF(0,0),&tMsr);
+            float tw=tMsr.Width+24.f;
+            if(active){
+                // Glow text shadow for active tab
+                Gdiplus::SolidBrush glTxt(Gdiplus::Color(55,34,211,238));
+                g.DrawString(tabLabels[i],-1,&tfnt,
+                    Gdiplus::PointF(tx+13.f,(float)(TAB_Y+11)),&glTxt);
+                Gdiplus::SolidBrush underBr(C::ACCENT);
+                g.FillRectangle(&underBr,tx,(float)(TAB_Y+TAB_H-3),tw,3.f);
+            }
+            Gdiplus::SolidBrush* tbr=active?&wBrush:&w2Brush;
+            g.DrawString(tabLabels[i],-1,&tfnt,Gdiplus::PointF(tx+12.f,(float)(TAB_Y+10)),tbr);
+            VBAdd(tabIds[i],(int)tx,TAB_Y,(int)tw,TAB_H);
+            tx+=tw+4.f;
+        }
+    }
+
+    // ── [5] Content ───────────────────────────────────────────────────────
+    {
+        g.FillRectangle(&bgBrush,0.f,(float)CONT_Y,(float)W,(float)CONT_H);
+        bool notInstalled=!IsInstalledForAllUsers();
+
+        if(g_activeTab==0){
+            float cardH=88.f, cardW=(W-36.f)*0.5f;
+            float cy=(float)(CONT_Y+16);
+
+            // Card status
+            {
+                Gdiplus::SolidBrush c1Bg(Gdiplus::Color(242,17,24,39));
+                FillRR(g,12.f,cy,cardW,cardH,12.f,c1Bg);
+                Gdiplus::Pen c1Pen(C::BORDER,1.f);
+                StrokeRR(g,12.f,cy,cardW,cardH,12.f,c1Pen);
+                g.DrawString(L"Status do Servidor",-1,&fntBold,
+                    Gdiplus::PointF(22.f,cy+12.f),&wBrush);
+                Gdiplus::Color stCol=g_srvConnected?C::GREEN:(g_srvRunning?C::YELLOW:C::TEXT2);
+                Gdiplus::Font fntVal(&ff,20,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+                Gdiplus::SolidBrush stBr(stCol);
+                const wchar_t* stLbl=g_srvConnected?L"Conectado":g_srvRunning?L"Aguardando":L"Parado";
+                g.DrawString(stLbl,-1,&fntVal,Gdiplus::PointF(22.f,cy+36.f),&stBr);
+                g.DrawString(L"Porta 7890",-1,&fntTiny,Gdiplus::PointF(22.f,cy+66.f),&w2Brush);
+            }
+            // Card IP
+            {
+                float cx2=16.f+cardW;
+                Gdiplus::SolidBrush c2Bg(Gdiplus::Color(242,17,24,39));
+                FillRR(g,cx2,cy,cardW,cardH,12.f,c2Bg);
+                Gdiplus::Pen c2Pen(C::BORDER,1.f);
+                StrokeRR(g,cx2,cy,cardW,cardH,12.f,c2Pen);
+                g.DrawString(L"Endereço IP Local",-1,&fntBold,
+                    Gdiplus::PointF(cx2+12.f,cy+12.f),&wBrush);
+                Gdiplus::Font fntIPSm(&ff,20,Gdiplus::FontStyleBold,Gdiplus::UnitPixel);
+                Gdiplus::SolidBrush ipBr(C::IP);
+                g.DrawString(wipW,-1,&fntIPSm,Gdiplus::PointF(cx2+12.f,cy+36.f),&ipBr);
+                g.DrawString(L"Compartilhe com o técnico",-1,&fntTiny,
+                    Gdiplus::PointF(cx2+12.f,cy+66.f),&w2Brush);
+            }
+            // Help card
+            {
+                float inY=cy+cardH+10.f, inW=(float)(W-24);
+                Gdiplus::SolidBrush inBg(Gdiplus::Color(242,17,24,39));
+                FillRR(g,12.f,inY,inW,76.f,12.f,inBg);
+                Gdiplus::Pen inPen(C::BORDER,1.f);
+                StrokeRR(g,12.f,inY,inW,76.f,12.f,inPen);
+                g.DrawString(L"Como usar: compartilhe o IP e a senha acima com o técnico de suporte.",
+                    -1,&fntSm,Gdiplus::PointF(22.f,inY+12.f),&w2Brush);
+                g.DrawString(L"O técnico conectará usando o Umbrela Viewer no lado dele.",
+                    -1,&fntSm,Gdiplus::PointF(22.f,inY+32.f),&w2Brush);
+                g.DrawString(L"Você poderá encerrar a sessão a qualquer momento.",
+                    -1,&fntSm,Gdiplus::PointF(22.f,inY+52.f),&w2Brush);
+            }
+            // Install card (shown only when not installed for all users)
+            if(notInstalled){
+                float inY=cy+cardH+10.f+76.f+10.f, inW=(float)(W-24);
+                // Card with subtle blue tint
+                Gdiplus::SolidBrush instBg(Gdiplus::Color(235,14,22,45));
+                FillRR(g,12.f,inY,inW,64.f,12.f,instBg);
+                Gdiplus::Pen instPen(Gdiplus::Color(120,37,99,235),1.f);
+                StrokeRR(g,12.f,inY,inW,64.f,12.f,instPen);
+                // Icon + text
+                Gdiplus::SolidBrush iconBr(Gdiplus::Color(180,34,211,238));
+                g.DrawString(L"⬇",-1,&fntBold,Gdiplus::PointF(22.f,inY+12.f),&iconBr);
+                g.DrawString(L"Instalar para todos os usuários",-1,&fntBold,
+                    Gdiplus::PointF(42.f,inY+12.f),&wBrush);
+                g.DrawString(
+                    L"Inicia automaticamente com o Windows. Requer senha de administrador.",
+                    -1,&fntTiny,Gdiplus::PointF(42.f,inY+32.f),&w2Brush);
+                // "Instalar agora →" button
+                bool instHot=(g_hotBtn==VB_INSTALL_NOW);
+                float ibX=inW-130.f, ibY=inY+18.f;
+                Gdiplus::Color ib1=instHot?Gdiplus::Color(255,37,99,235):Gdiplus::Color(200,37,99,235);
+                Gdiplus::Color ib2=instHot?Gdiplus::Color(255,34,211,238):Gdiplus::Color(180,14,116,144);
+                Gdiplus::LinearGradientBrush ibGr(
+                    Gdiplus::PointF(ibX,ibY),Gdiplus::PointF(ibX+118.f,ibY+26.f),ib1,ib2);
+                FillRR(g,ibX,ibY,118.f,26.f,8.f,ibGr);
+                Gdiplus::SolidBrush ibTxt(C::TEXT);
+                Gdiplus::StringFormat sfIB;
+                sfIB.SetAlignment(Gdiplus::StringAlignmentCenter);
+                sfIB.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                g.DrawString(L"Instalar agora →",-1,&fntSm,
+                    Gdiplus::RectF(ibX,ibY,118.f,26.f),&sfIB,&ibTxt);
+                VBAdd(VB_INSTALL_NOW,(int)ibX,(int)ibY,118,26);
+            }
+            // ── Serviço Windows card ──────────────────────────────────────
+            {
+                float svcOffY = notInstalled ? cy+cardH+10.f+76.f+10.f+64.f+10.f
+                                             : cy+cardH+10.f+76.f+10.f;
+                float svcW=(float)(W-24);
+                bool svcInst = IsServiceInstalled();
+                bool svcRun  = svcInst && IsServiceRunning();
+
+                // Border colour: green if running, blue if installed+stopped, default otherwise
+                Gdiplus::Color svcBdrCol = svcRun
+                    ? Gdiplus::Color(140,16,185,129)
+                    : svcInst ? Gdiplus::Color(100,37,99,235)
+                              : Gdiplus::Color(80,37,99,235);
+
+                Gdiplus::SolidBrush svcBg(Gdiplus::Color(235,12,20,38));
+                FillRR(g,12.f,svcOffY,svcW,64.f,12.f,svcBg);
+                Gdiplus::Pen svcPen(svcBdrCol,1.f);
+                StrokeRR(g,12.f,svcOffY,svcW,64.f,12.f,svcPen);
+
+                // Status dot
+                Gdiplus::Color dotClr = svcRun ? C::GREEN : svcInst ? C::YELLOW : C::TEXT2;
+                float dcx=28.f, dcy=svcOffY+20.f;
+                if(svcRun||svcInst){
+                    Gdiplus::SolidBrush h1(Gdiplus::Color(60,dotClr.GetR(),dotClr.GetG(),dotClr.GetB()));
+                    g.FillEllipse(&h1,dcx-10.f,dcy-10.f,20.f,20.f);
+                }
+                Gdiplus::SolidBrush dotBr2(dotClr);
+                g.FillEllipse(&dotBr2,dcx-6.f,dcy-6.f,12.f,12.f);
+
+                // Labels
+                g.DrawString(L"Serviço Windows",-1,&fntBold,Gdiplus::PointF(44.f,svcOffY+10.f),&wBrush);
+                const wchar_t* svcLbl = svcRun  ? L"Em execução — captura UAC ativa"
+                                       : svcInst ? L"Instalado mas parado"
+                                                 : L"Não instalado";
+                Gdiplus::SolidBrush svcLblBr(dotClr);
+                g.DrawString(svcLbl,-1,&fntTiny,Gdiplus::PointF(44.f,svcOffY+32.f),&svcLblBr);
+
+                // Action button
+                bool svcBtnHot=(g_hotBtn==VB_SVC_TOGGLE);
+                const wchar_t* svcBtnLbl = svcInst ? L"Remover Serviço" : L"Instalar Serviço";
+                Gdiplus::Color sb1 = svcInst
+                    ? (svcBtnHot ? Gdiplus::Color(255,185,28,28):Gdiplus::Color(200,140,20,20))
+                    : (svcBtnHot ? Gdiplus::Color(255,37,99,235) :Gdiplus::Color(200,37,99,235));
+                Gdiplus::Color sb2 = svcInst
+                    ? (svcBtnHot ? Gdiplus::Color(255,220,38,38) :Gdiplus::Color(180,160,30,30))
+                    : (svcBtnHot ? Gdiplus::Color(255,34,211,238):Gdiplus::Color(180,14,116,144));
+                float sbX=svcW-136.f, sbY=svcOffY+18.f;
+                Gdiplus::LinearGradientBrush sbGr(
+                    Gdiplus::PointF(sbX,sbY),Gdiplus::PointF(sbX+124.f,sbY+26.f),sb1,sb2);
+                FillRR(g,sbX,sbY,124.f,26.f,8.f,sbGr);
+                Gdiplus::SolidBrush sbTxt(C::TEXT);
+                Gdiplus::StringFormat sfSB;
+                sfSB.SetAlignment(Gdiplus::StringAlignmentCenter);
+                sfSB.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                g.DrawString(svcBtnLbl,-1,&fntSm,
+                    Gdiplus::RectF(sbX,sbY,124.f,26.f),&sfSB,&sbTxt);
+                VBAdd(VB_SVC_TOGGLE,(int)sbX,(int)sbY,124,26);
+            }
+        } else {
+            // Sessões Recentes
+            if(g_recentSessions.empty()){
+                Gdiplus::StringFormat sfCen; sfCen.SetAlignment(Gdiplus::StringAlignmentCenter);
+                g.DrawString(L"Nenhuma sessão recente.",-1,&fntNorm,
+                    Gdiplus::RectF(0.f,(float)(CONT_Y+80),(float)W,40.f),&sfCen,&w2Brush);
+            } else {
+                float cw=215.f, ch=140.f;
+                float startX=16.f, startY=(float)(CONT_Y+16);
+                int cols=4;
+                for(int i=0;i<(int)g_recentSessions.size()&&i<8;i++){
+                    int col=i%cols, row=i/cols;
+                    float cx=startX+(cw+10.f)*col, cy=(float)(startY+(ch+10.f)*row);
+                    bool hot=(g_hotBtn==VB_SESSION_0+i);
+                    Gdiplus::SolidBrush scBg(hot?Gdiplus::Color(255,22,35,57):Gdiplus::Color(242,17,24,39));
+                    FillRR(g,cx,cy,cw,ch,12.f,scBg);
+                    Gdiplus::Pen scPen(hot?C::BDRHI:C::BORDER,1.f);
+                    StrokeRR(g,cx,cy,cw,ch,12.f,scPen);
+                    DrawUmbrelaIcon(g,cx+8.f,cy+8.f,28.f);
+                    wchar_t wipR[64]={}; MultiByteToWideChar(CP_UTF8,0,g_recentSessions[i].ip.c_str(),-1,wipR,64);
+                    g.DrawString(wipR,-1,&fntBold,Gdiplus::PointF(cx+8.f,cy+46.f),&wBrush);
+                    wchar_t wnR[64]={}; MultiByteToWideChar(CP_UTF8,0,g_recentSessions[i].name.c_str(),-1,wnR,64);
+                    g.DrawString(wnR,-1,&fntTiny,Gdiplus::PointF(cx+8.f,cy+64.f),&w2Brush);
+                    if(g_recentSessions[i].lastConn){
+                        char tbuf[32]; tm tm2={};
+                        localtime_s(&tm2,&g_recentSessions[i].lastConn);
+                        strftime(tbuf,sizeof(tbuf),"%d/%m/%Y %H:%M",&tm2);
+                        wchar_t wtbuf[32]={}; MultiByteToWideChar(CP_UTF8,0,tbuf,-1,wtbuf,32);
+                        g.DrawString(wtbuf,-1,&fntTiny,Gdiplus::PointF(cx+8.f,cy+82.f),&w2Brush);
+                    }
+                    float cbX=cx+8.f, cbY=cy+106.f, cbW=cw-16.f, cbH=24.f;
+                    Gdiplus::Color cc1=hot?Gdiplus::Color(255,37,99,235):Gdiplus::Color(200,37,99,235);
+                    Gdiplus::Color cc2=hot?Gdiplus::Color(255,34,211,238):Gdiplus::Color(180,14,116,144);
+                    Gdiplus::LinearGradientBrush cbGr(
+                        Gdiplus::PointF(cbX,cbY),Gdiplus::PointF(cbX+cbW,cbY+cbH),cc1,cc2);
+                    FillRR(g,cbX,cbY,cbW,cbH,8.f,cbGr);
+                    Gdiplus::SolidBrush cbTxt(C::TEXT);
+                    Gdiplus::StringFormat sfCb;
+                    sfCb.SetAlignment(Gdiplus::StringAlignmentCenter);
+                    sfCb.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                    g.DrawString(L"Conectar",-1,&fntSm,
+                        Gdiplus::RectF(cbX,cbY,cbW,cbH),&sfCb,&cbTxt);
+                    VBAdd(VB_SESSION_0+i,(int)cx,(int)cy,(int)cw,(int)ch);
+                }
+            }
+        }
+    }
+
+    // ── [6] Footer ────────────────────────────────────────────────────────
+    {
+        Gdiplus::SolidBrush footBg(Gdiplus::Color(255,17,24,39));
+        g.FillRectangle(&footBg,0.f,(float)FOOT_Y,(float)W,(float)FOOT_H);
+        Gdiplus::Pen footSep(C::BORDER,1.f);
+        g.DrawLine(&footSep,0.f,(float)FOOT_Y,(float)W,(float)FOOT_Y);
+        Gdiplus::Font fntFoot(&ff,10,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush footBr(C::TEXT2);
+        Gdiplus::StringFormat sfFoot; sfFoot.SetAlignment(Gdiplus::StringAlignmentCenter);
+        g.DrawString(L"Umbrela Viewer v1.0  —  Solução de acesso remoto seguro",
+            -1,&fntFoot,Gdiplus::RectF(0.f,(float)(FOOT_Y+9),(float)W,18.f),&sfFoot,&footBr);
+    }
 }
 
 // ─── Mini-dialog WndProc ─────────────────────────────────────────────────────
@@ -981,6 +1713,20 @@ static LRESULT CALLBACK UVDlgProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         } else if(id == IDCANCEL) {
             g_dlgResultCode = IDCANCEL; g_dlgDone = true;
             DestroyWindow(hw);
+        } else if(id == 200) { // toggle show/hide password
+            HWND edit = g_activeDlgEdit;
+            HWND btn  = GetDlgItem(hw, 200);
+            if(edit && btn) {
+                LRESULT pc = SendMessage(edit, EM_GETPASSWORDCHAR, 0, 0);
+                if(pc) { // hidden → show
+                    SendMessage(edit, EM_SETPASSWORDCHAR, 0, 0);
+                    SetWindowTextA(btn, "Ocultar");
+                } else { // shown → hide
+                    SendMessage(edit, EM_SETPASSWORDCHAR, (WPARAM)0x25CF, 0);
+                    SetWindowTextA(btn, "Mostrar");
+                }
+                InvalidateRect(edit, nullptr, TRUE);
+            }
         }
         return 0;
     }
@@ -988,7 +1734,7 @@ static LRESULT CALLBACK UVDlgProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         g_dlgResultCode = IDCANCEL; g_dlgDone = true;
         DestroyWindow(hw); return 0;
     }
-    return DefWindowProcA(hw, msg, wp, lp);
+    return DefWindowProcW(hw, msg, wp, lp);
 }
 
 // Pumps messages until dialog closes; handles Enter/Escape from child controls.
@@ -1017,14 +1763,14 @@ static void RunDlgLoop(HWND dlg, HWND editCtrl, HWND disableParent) {
 // ─── Settings menu ────────────────────────────────────────────────────────────
 static void ShowSettingsMenu(HWND hw){
     HMENU m=CreatePopupMenu();
-    AppendMenuA(m,MF_STRING,IDM_REGEN,       "↻  Gerar nova senha");
-    AppendMenuA(m,MF_STRING,IDM_SETDEFAULT,  "✎  Definir senha padrão...");
+    AppendMenuW(m,MF_STRING,IDM_REGEN,       L"↻  Gerar nova senha");
+    AppendMenuW(m,MF_STRING,IDM_SETDEFAULT,  L"✎  Definir senha padrão...");
     if(!g_defaultPass.empty())
-        AppendMenuA(m,MF_STRING,IDM_CLEARDEFAULT,"✕  Remover senha padrão");
-    AppendMenuA(m,MF_SEPARATOR,0,nullptr);
-    AppendMenuA(m,MF_STRING,IDM_ABOUT,       "ℹ  Sobre o Umbrela Viewer");
-    AppendMenuA(m,MF_SEPARATOR,0,nullptr);
-    AppendMenuA(m,MF_STRING,IDM_EXIT,        "✕  Finalizar");
+        AppendMenuW(m,MF_STRING,IDM_CLEARDEFAULT,L"✕  Remover senha padrão");
+    AppendMenuW(m,MF_SEPARATOR,0,nullptr);
+    AppendMenuW(m,MF_STRING,IDM_ABOUT,       L"ℹ  Sobre o Umbrela Viewer");
+    AppendMenuW(m,MF_SEPARATOR,0,nullptr);
+    AppendMenuW(m,MF_STRING,IDM_EXIT,        L"✕  Finalizar");
 
     // Position below hamburger button
     POINT pt; GetCursorPos(&pt);
@@ -1036,24 +1782,25 @@ static void ShowSettingsMenu(HWND hw){
 static void ShowSetDefaultPassDialog(HWND parent){
     strncpy_s(g_dlgPassBuf, g_defaultPass.c_str(), 64);
     g_dlgResultCode=IDCANCEL; g_dlgDone=false;
-    HWND dlg=CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,"UVDlg","Umbrela Viewer — Definir Senha Padrão",
+    HWND dlg=CreateWindowExW(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,L"UVDlg",L"Umbrela Viewer — Definir Senha Padrão",
         WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,220,180,360,178,nullptr,nullptr,g_hInst,nullptr);
     HFONT hf=(HFONT)GetStockObject(DEFAULT_GUI_FONT);
-    auto mkc=[&](const char*cls,const char*t,DWORD st,int x,int y,int w,int h,int id)->HWND{
-        HWND c=CreateWindowA(cls,t,WS_CHILD|WS_VISIBLE|st,x,y,w,h,dlg,(HMENU)(intptr_t)id,g_hInst,nullptr);
+    auto mkc=[&](const wchar_t*cls,const wchar_t*t,DWORD st,int x,int y,int w,int h,int id)->HWND{
+        HWND c=CreateWindowW(cls,t,WS_CHILD|WS_VISIBLE|st,x,y,w,h,dlg,(HMENU)(intptr_t)id,g_hInst,nullptr);
         SendMessage(c,WM_SETFONT,(WPARAM)hf,TRUE);return c;
     };
-    mkc("STATIC","Senha padrão (deixe vazio para gerar automaticamente a cada início):",SS_LEFT,10,10,330,30,0);
-    HWND editP=mkc("EDIT",g_dlgPassBuf,WS_BORDER|ES_AUTOHSCROLL,10,44,330,26,100);
+    mkc(L"STATIC",L"Senha padrão (deixe vazio para gerar automaticamente a cada início):",SS_LEFT,10,10,330,30,0);
+    wchar_t wPassBuf[65]={};
+    MultiByteToWideChar(CP_ACP,0,g_dlgPassBuf,-1,wPassBuf,65);
+    HWND editP=mkc(L"EDIT",wPassBuf,WS_BORDER|ES_AUTOHSCROLL,10,44,330,26,100);
     SendMessage(editP,EM_SETLIMITTEXT,63,0);
-    mkc("BUTTON","Cancelar",BS_PUSHBUTTON,155,95,85,28,IDCANCEL);
-    mkc("BUTTON","Salvar",BS_DEFPUSHBUTTON,250,95,85,28,IDOK);
+    mkc(L"BUTTON",L"Cancelar",BS_PUSHBUTTON,155,95,85,28,IDCANCEL);
+    mkc(L"BUTTON",L"Salvar",BS_DEFPUSHBUTTON,250,95,85,28,IDOK);
     g_activeDlgEdit=editP; SetFocus(editP);
     RunDlgLoop(dlg,editP,parent);
     if(g_dlgResultCode==IDOK){
         g_defaultPass=g_dlgPassBuf;
         SaveConfig();
-        g_sessionPass=g_defaultPass.empty()?GeneratePassword():g_defaultPass;
         InvalidateRect(parent,nullptr,FALSE);
     }
 }
@@ -1143,23 +1890,71 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
                 }
                 break;
             case VB_REGEN_PASS:
-                g_sessionPass=g_defaultPass.empty()?GeneratePassword():g_defaultPass;
+                g_sessionPass=GeneratePassword();
                 InvalidateRect(hw,nullptr,FALSE);
                 break;
-            case VB_SETTINGS: ShowSettingsMenu(hw); break;
+            case VB_SHARE:        DoShare(); break;
+            case VB_INSTALL_NOW:  DoInstallAllUsers(); break;
+            case VB_SVC_TOGGLE:
+                if(IsServiceInstalled()) DoUninstallService();
+                else DoInstallService();
+                break;
+            case VB_TAB_HOME:
+                g_activeTab=0; InvalidateRect(hw,nullptr,FALSE); break;
+            case VB_TAB_RECENT:
+                g_activeTab=1; InvalidateRect(hw,nullptr,FALSE); break;
+            default:
+                if(hit>=VB_SESSION_0&&hit<VB_SESSION_0+8){
+                    int idx=hit-VB_SESSION_0;
+                    if(idx<(int)g_recentSessions.size()){
+                        std::string ip=g_recentSessions[idx].ip;
+                        SetWindowTextA(g_editRemIP,ip.c_str());
+                        DoConnect();
+                    }
+                }
+                break;
             }
         }
         return 0;
     }
 
     case WM_UPDATE_AVAILABLE:{
-        int r=MessageBoxA(hw,
-            "Nova versão do Umbrela Viewer disponível!\n\n"
-            "Deseja atualizar agora? O programa será reiniciado.",
-            "Umbrela Viewer — Atualização",MB_YESNO|MB_ICONINFORMATION);
+        int r=MessageBoxW(hw,
+            L"Nova versão do Umbrela Viewer disponível!\n\n"
+            L"Deseja atualizar agora? O programa será reiniciado.",
+            L"Umbrela Viewer — Atualização",MB_YESNO|MB_ICONINFORMATION);
         if(r==IDYES) std::thread(DoUpdateDownload).detach();
         return 0;
     }
+
+    case WM_HOST_ACCESS_REQUEST:{
+        // Traz a janela para frente e pisca na barra de tarefas
+        ShowWindow(hw, SW_RESTORE); SetForegroundWindow(hw);
+        FLASHWINFO fi={sizeof(fi),hw,FLASHW_ALL|FLASHW_TIMERNOFG,6,0};
+        FlashWindowEx(&fi);
+        int r=MessageBoxW(hw,
+            L"Um técnico solicita acesso remoto a este computador.\n\n"
+            L"Deseja permitir a conexão?\n\n"
+            L"Se não reconhece esta solicitação, clique em NÃO.",
+            L"Umbrela Viewer — Solicitação de Acesso",
+            MB_YESNO|MB_ICONQUESTION|MB_TOPMOST|MB_DEFBUTTON2);
+        g_accessDecision = (r==IDYES);
+        if(g_accessEvent) SetEvent(g_accessEvent);
+        return 0;
+    }
+
+    case WM_CONNECT_OK:{
+        if(!g_connectingIP.empty()){ AddRecentSession(g_connectingIP); g_connectingIP.clear(); }
+        g_viewSock=(SOCKET)wp;
+        g_viewRunning=g_viewConnected=true;
+        CreateViewerWindow();
+        std::thread(ViewRecvThread).detach();
+        PostMessage(g_viewerWnd,WM_VIEW_CONNECTED,0,0);
+        return 0;
+    }
+    case WM_CONNECT_FAIL:
+        EnableWindow(g_btnConnect,TRUE);
+        return 0;
 
     case WM_HOST_STATUS:{
         g_hostStatus=(int)wp;
@@ -1174,7 +1969,7 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
     case WM_COMMAND:
         switch(LOWORD(wp)){
         case IDM_REGEN:
-            g_sessionPass=g_defaultPass.empty()?GeneratePassword():g_defaultPass;
+            g_sessionPass=GeneratePassword();
             InvalidateRect(hw,nullptr,FALSE); break;
         case IDM_SETDEFAULT:  ShowSetDefaultPassDialog(hw); break;
         case IDM_CLEARDEFAULT:
@@ -1182,8 +1977,8 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
             g_sessionPass=GeneratePassword();
             InvalidateRect(hw,nullptr,FALSE); break;
         case IDM_ABOUT:
-            MessageBoxA(hw,"Umbrela Viewer v1.0\n\nSolução de acesso remoto seguro\npara suporte técnico interno.\n\nDesenvolvido por Jean Silva",
-                "Sobre o Umbrela Viewer",MB_OK|MB_ICONINFORMATION); break;
+            MessageBoxW(hw,L"Umbrela Viewer v1.0\n\nSolução de acesso remoto seguro\npara suporte técnico interno.\n\nDesenvolvido por Jean Silva",
+                L"Sobre o Umbrela Viewer",MB_OK|MB_ICONINFORMATION); break;
         case IDM_SHOW: ShowWindow(hw,SW_RESTORE);SetForegroundWindow(hw); break;
         case IDM_EXIT:
             Shell_NotifyIconA(NIM_DELETE,&g_nid);PostQuitMessage(0); break;
@@ -1193,12 +1988,12 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
     case WM_TRAYICON:
         if(lp==WM_RBUTTONUP){
             HMENU m=CreatePopupMenu();
-            AppendMenuA(m,MF_STRING,IDM_SHOW,"Mostrar Umbrela Viewer");
-            AppendMenuA(m,MF_SEPARATOR,0,nullptr);
-            AppendMenuA(m,MF_STRING,IDM_REGEN,"Gerar nova senha");
-            AppendMenuA(m,MF_STRING,IDM_SETDEFAULT,"Definir senha padrão...");
-            AppendMenuA(m,MF_SEPARATOR,0,nullptr);
-            AppendMenuA(m,MF_STRING,IDM_EXIT,"Finalizar");
+            AppendMenuW(m,MF_STRING,IDM_SHOW,L"Mostrar Umbrela Viewer");
+            AppendMenuW(m,MF_SEPARATOR,0,nullptr);
+            AppendMenuW(m,MF_STRING,IDM_REGEN,L"Gerar nova senha");
+            AppendMenuW(m,MF_STRING,IDM_SETDEFAULT,L"Definir senha padrão...");
+            AppendMenuW(m,MF_SEPARATOR,0,nullptr);
+            AppendMenuW(m,MF_STRING,IDM_EXIT,L"Finalizar");
             POINT pt;GetCursorPos(&pt);SetForegroundWindow(hw);
             TrackPopupMenu(m,TPM_RIGHTBUTTON,pt.x,pt.y,0,hw,nullptr);
             DestroyMenu(m);
@@ -1241,14 +2036,14 @@ static void DoUpdateDownload() {
             PostMessage(g_mainWnd, WM_COMMAND, IDM_EXIT, 0);
         } else {
             DeleteFileA(tmpExe);
-            MessageBoxA(nullptr,
-                "Atualização cancelada (UAC negado ou erro).",
-                "Umbrela Viewer",MB_OK|MB_ICONWARNING);
+            MessageBoxW(nullptr,
+                L"Atualização cancelada (UAC negado ou erro).",
+                L"Umbrela Viewer",MB_OK|MB_ICONWARNING);
         }
     } else {
-        MessageBoxA(nullptr,
-            "Não foi possível baixar a atualização.\nVerifique a conexão e tente mais tarde.",
-            "Umbrela Viewer",MB_OK|MB_ICONERROR);
+        MessageBoxW(nullptr,
+            L"Não foi possível baixar a atualização.\nVerifique a conexão e tente mais tarde.",
+            L"Umbrela Viewer",MB_OK|MB_ICONERROR);
     }
 }
 
@@ -1276,19 +2071,35 @@ static void CheckUpdateThread() {
 int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     g_hInst=hInst;
 
-    // Instância elevada responsável pela instalação (lançada pelo processo normal)
-    if(lpCmdLine && strstr(lpCmdLine,"/install")){
-        if(DoInstall()){
-            ShellExecuteA(nullptr,"open",GetInstallExe().c_str(),nullptr,nullptr,SW_SHOW);
-        } else {
-            MessageBoxA(nullptr,
-                "Falha ao instalar em C:\\Program Files\\UmbrelaViewer.\n"
-                "Verifique as permissões e tente novamente.",
-                "Umbrela Viewer",MB_OK|MB_ICONERROR);
-        }
+    // ── /service — run as a Windows service (launched by SCM) ─────────────────
+    if(lpCmdLine && strstr(lpCmdLine,"/service")){
+        static SERVICE_TABLE_ENTRYA tbl[] = {
+            { (LPSTR)SVC_NAME, ServiceMain },
+            { nullptr, nullptr }
+        };
+        StartServiceCtrlDispatcherA(tbl);
         return 0;
     }
 
+    // ── /install-service — elevated helper (do the actual install) ─────────
+    if(lpCmdLine && strstr(lpCmdLine,"/install-service")){
+        InstallServiceNow();
+        return 0;
+    }
+
+    // ── /uninstall-service — elevated helper (do the actual remove) ────────
+    if(lpCmdLine && strstr(lpCmdLine,"/uninstall-service")){
+        UninstallServiceNow();
+        return 0;
+    }
+
+    // ── /install-all — elevated helper (install exe for all users) ─────────
+    if(lpCmdLine && strstr(lpCmdLine,"/install-all")){
+        DoInstallAllUsersNow();
+        return 0;
+    }
+
+    // ── Normal GUI mode ────────────────────────────────────────────────────
     // Instância única
     HANDLE mutex=CreateMutexA(nullptr,TRUE,"UmbrelaViewerMutex_3f7b");
     if(GetLastError()==ERROR_ALREADY_EXISTS){
@@ -1297,45 +2108,15 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
         return 0;
     }
 
+    g_accessEvent = CreateEventW(nullptr,TRUE,FALSE,nullptr); // manual-reset, not signaled
+
     Gdiplus::GdiplusStartup(&g_gdipToken,&g_gdip,nullptr);
     WSADATA wsa;WSAStartup(MAKEWORD(2,2),&wsa);
     InitCommonControls();
 
-    if(!IsRunningFromInstallDir()){
-        int r=MessageBoxA(nullptr,
-            "Umbrela Viewer não está instalado.\n\nDeseja instalar agora?\n\n"
-            "  • Instalado em C:\\Program Files\\UmbrelaViewer\n"
-            "  • Inicia automaticamente com o Windows (todos os usuários)\n"
-            "  • Atalho na Área de Trabalho (todos os usuários)",
-            "Umbrela Viewer — Instalação",MB_YESNO|MB_ICONQUESTION);
-        if(r==IDYES){
-            if(IsRunningAsAdmin()){
-                // Já é admin — instala diretamente
-                if(DoInstall()){
-                    ShellExecuteA(nullptr,"open",GetInstallExe().c_str(),nullptr,nullptr,SW_SHOW);
-                    return 0;
-                }
-            } else {
-                // Pede elevação (UAC) — relança com /install
-                char exePath[MAX_PATH];
-                GetModuleFileNameA(nullptr,exePath,MAX_PATH);
-                SHELLEXECUTEINFOA sei={};
-                sei.cbSize=sizeof(sei);
-                sei.lpVerb="runas";
-                sei.lpFile=exePath;
-                sei.lpParameters="/install";
-                sei.nShow=SW_SHOW;
-                if(ShellExecuteExA(&sei)){
-                    return 0; // instância elevada cuida do resto
-                }
-                // Usuário negou UAC — continua rodando sem instalar
-            }
-        }
-    }
-
     LoadConfig();
     GetLocalIP();
-    g_sessionPass=g_defaultPass.empty()?GeneratePassword():g_defaultPass;
+    g_sessionPass=GeneratePassword();
 
     // Register classes
     WNDCLASSA wc={};wc.hInstance=hInst;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
@@ -1344,8 +2125,9 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     wc.lpfnWndProc=ViewerWndProc;wc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);wc.lpszClassName="ARViewerWnd";RegisterClassA(&wc);
     wc.lpfnWndProc=ViewPanelProc;wc.hCursor=LoadCursor(nullptr,IDC_CROSS);
     wc.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH);wc.lpszClassName="ARViewPanel";RegisterClassA(&wc);
-    wc.lpfnWndProc=UVDlgProc;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
-    wc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);wc.lpszClassName="UVDlg";RegisterClassA(&wc);
+    { WNDCLASSW wcw={};wcw.lpfnWndProc=UVDlgProc;wcw.hInstance=hInst;
+      wcw.hCursor=LoadCursor(nullptr,IDC_ARROW);
+      wcw.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);wcw.lpszClassName=L"UVDlg";RegisterClassW(&wcw); }
 
     // Main window — no resize
     g_mainWnd=CreateWindowA("ARMain","Umbrela Viewer",
@@ -1365,7 +2147,7 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     // Address bar edit control (floats on top of the drawn box)
     g_editRemIP=CreateWindowExA(0,"EDIT","",
         WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
-        44,ADDR_Y+14,(WIN_W-16)-44-52,28,  // inside the address box, after icon, before connect btn
+        50,ADDR_Y+12,WIN_W-50-70,26,
         g_mainWnd,(HMENU)500,hInst,nullptr);
     SendMessageW(g_editRemIP,EM_SETCUEBANNER,TRUE,(LPARAM)L"Digite o IP remoto...");
     HFONT hfAddr=CreateFontA(15,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,DEFAULT_QUALITY,DEFAULT_PITCH,"Segoe UI");
@@ -1383,8 +2165,13 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR lpCmdLine,int nCmd){
     ShowWindow(g_mainWnd,nCmd);
     UpdateWindow(g_mainWnd);
 
-    // Auto-start hosting
-    if(StartHosting()) PostMessage(g_mainWnd,WM_HOST_STATUS,1,0);
+    // Auto-start hosting — skip if the Windows service already owns the port
+    if(!IsServiceRunning()){
+        if(StartHosting()) PostMessage(g_mainWnd,WM_HOST_STATUS,1,0);
+    } else {
+        // Service is running; UI is read-only (viewer) — no hosting needed
+        PostMessage(g_mainWnd,WM_HOST_STATUS,1,0);
+    }
 
     // Verifica atualizações em background
     std::thread(CheckUpdateThread).detach();

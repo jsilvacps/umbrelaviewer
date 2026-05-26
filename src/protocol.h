@@ -18,6 +18,7 @@ enum class PacketType : uint32_t {
     FILE_SEND_START  = 13,
     FILE_SEND_DATA   = 14,
     FILE_SEND_END    = 15,
+    CONNECT_BUSY     = 16,
     PING             = 17,
     PONG             = 18,
 };
