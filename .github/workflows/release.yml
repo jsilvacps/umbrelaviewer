@@ -24,14 +24,17 @@ jobs:
         with:
           arch: x64
 
-      # 3. Verifica / instala NSIS (pré-instalado no windows-latest, mas garante)
+      # 3. Verifica / instala NSIS e expõe o path para os próximos steps
       - name: Verify NSIS
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) {
             choco install nsis --yes --no-progress
           }
-          Write-Host "NSIS: $(makensis /VERSION)"
+          Write-Host "NSIS: $(& $nsis /VERSION)"
+          # Registra o diretório no GITHUB_PATH para que os steps seguintes encontrem makensis
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
 
       # 4. CMake configure
       - name: CMake Configure
