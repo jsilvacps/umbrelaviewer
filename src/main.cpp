@@ -100,17 +100,17 @@ namespace C {
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 #define WIN_W     960   // wider — matches AnyDesk proportions
-#define WIN_H     660
+#define WIN_H     690   // +30 para acomodar botão "Solicitar Suporte"
 #define TOOL_H     46   // title bar
 #define ADDR_Y     46   // address bar top
 #define ADDR_H     50   // address bar height
 #define HERO_Y     96   // "Este dispositivo" + senha section
-#define HERO_H    130   // hero height
-#define TAB_Y     226   // tab bar top   (HERO_Y+HERO_H)
+#define HERO_H    160   // hero height (+30)
+#define TAB_Y     256   // tab bar top   (HERO_Y+HERO_H)
 #define TAB_H      38   // tab bar height
-#define CONT_Y    264   // content below tabs  (TAB_Y+TAB_H)
+#define CONT_Y    294   // content below tabs  (TAB_Y+TAB_H)
 #define CONT_H    364   // content height
-#define FOOT_Y    628   // footer top   (CONT_Y+CONT_H)
+#define FOOT_Y    658   // footer top   (CONT_Y+CONT_H)
 #define FOOT_H     32   // footer height  (FOOT_Y+FOOT_H == WIN_H)
 
 // ─── Virtual button system ────────────────────────────────────────────────────
@@ -125,6 +125,7 @@ namespace C {
 #define VB_INSTALL_NOW  9  // "Instalar para todos os usuários" card button
 #define VB_SVC_TOGGLE  18  // service card: install / stop service
 #define VB_OPEN_PORT   19  // firewall card: liberar porta 7890
+#define VB_CALL_TECH   20  // host: "Solicitar Suporte" (conecta saindo → técnico)
 
 struct VBtn { RECT rc; int id; };
 static VBtn  g_btns[28] = {};
@@ -498,9 +499,45 @@ static void HostStreamThread(){
     }
 }
 
+// ─── Conexão reversa: técnico recebe tela do funcionário ─────────────────────
+// O funcionário (host) conecta SAINDO para o técnico (viewer). O primeiro pacote
+// é HOST_HELLO — o listener detecta e entra em modo viewer.
+static void HandleReverseHostConnection(SOCKET sock, PacketHeader firstHdr) {
+    HostHelloData hello = {};
+    if (firstHdr.dataSize != sizeof(hello) || !RecvAll(sock, &hello, sizeof(hello))) {
+        closesocket(sock); return;
+    }
+    // Responde com CONNECT_REQUEST usando o session code do host como senha
+    ConnectRequestData crd = {};
+    strncpy_s(crd.password, hello.sessionCode, sizeof(crd.password)-1);
+    PacketHeader reqHdr = {PacketType::CONNECT_REQUEST, (uint32_t)sizeof(crd)};
+    send(sock,(char*)&reqHdr,sizeof(reqHdr),0);
+    send(sock,(char*)&crd,sizeof(crd),0);
+
+    // Aguarda CONNECT_ACCEPT do host
+    PacketHeader resp = {};
+    DWORD to = 10000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&to, sizeof(to));
+    if (!RecvAll(sock, &resp, sizeof(resp)) || resp.type != PacketType::CONNECT_ACCEPT) {
+        closesocket(sock); return;
+    }
+    DWORD noTo = 0; setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&noTo, sizeof(noTo));
+
+    // Abre a janela de viewer no thread principal
+    PostMessage(g_mainWnd, WM_CONNECT_OK, (WPARAM)sock, 0);
+}
+
 static void HostClientThread(SOCKET sock){
     PacketHeader hdr; ConnectRequestData crd={};
-    if(!RecvAll(sock,&hdr,sizeof(hdr))||hdr.type!=PacketType::CONNECT_REQUEST
+    if(!RecvAll(sock,&hdr,sizeof(hdr))){
+        closesocket(sock); return;
+    }
+    // Conexão reversa: host chamando o técnico
+    if(hdr.type == PacketType::HOST_HELLO){
+        HandleReverseHostConnection(sock, hdr); return;
+    }
+    // Conexão normal: viewer conectando ao host
+    if(hdr.type!=PacketType::CONNECT_REQUEST
        ||hdr.dataSize!=sizeof(crd)||!RecvAll(sock,&crd,sizeof(crd))){
         closesocket(sock); return;
     }
@@ -606,6 +643,61 @@ static void HostAcceptThread(){
         }
         std::thread(HostClientThread,c).detach();
     }
+}
+
+// ─── Conexão reversa: host conecta SAINDO até o viewer ───────────────────────
+// O funcionário (host) chama o técnico (viewer) via outbound TCP — sem precisar
+// de nenhuma regra de firewall na estação do funcionário.
+static void HostCallViewerThread(std::string viewerIP) {
+    auto fail = [](const wchar_t* msg){
+        MessageBoxW(nullptr,msg,L"Umbrela Viewer",MB_OK|MB_ICONERROR);
+    };
+    addrinfo hints={}, *res=nullptr;
+    hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
+    char portStr[8]; snprintf(portStr,sizeof(portStr),"%d",DEFAULT_PORT);
+    if(getaddrinfo(viewerIP.c_str(),portStr,&hints,&res)!=0||!res){
+        fail(L"Endereço inválido ou técnico não encontrado."); return;
+    }
+    SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if(s==INVALID_SOCKET){freeaddrinfo(res);fail(L"Erro interno de socket.");return;}
+    u_long nb=1; ioctlsocket(s,FIONBIO,&nb);
+    connect(s,res->ai_addr,(int)res->ai_addrlen);
+    freeaddrinfo(res);
+    fd_set wr,ex; FD_ZERO(&wr); FD_ZERO(&ex); FD_SET(s,&wr); FD_SET(s,&ex);
+    timeval tv={8,0};
+    if(select(0,nullptr,&wr,&ex,&tv)<=0||FD_ISSET(s,&ex)){
+        closesocket(s);
+        fail(L"Não foi possível conectar ao técnico.\n"
+             L"Verifique o IP e se o Umbrela Viewer está aberto no PC do técnico.");
+        return;
+    }
+    nb=0; ioctlsocket(s,FIONBIO,&nb);
+
+    // Envia HOST_HELLO com o session code desta máquina
+    HostHelloData hello={};
+    strncpy_s(hello.sessionCode,g_sessionPass.c_str(),sizeof(hello.sessionCode)-1);
+    PacketHeader helloHdr={PacketType::HOST_HELLO,(uint32_t)sizeof(hello)};
+    send(s,(char*)&helloHdr,sizeof(helloHdr),0);
+    send(s,(char*)&hello,sizeof(hello),0);
+
+    // Aguarda CONNECT_REQUEST do viewer (técnico)
+    PacketHeader reqHdr={}; ConnectRequestData crd={};
+    DWORD to=12000; setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&to,sizeof(to));
+    if(!RecvAll(s,&reqHdr,sizeof(reqHdr))||reqHdr.type!=PacketType::CONNECT_REQUEST
+       ||!RecvAll(s,&crd,sizeof(crd))){
+        closesocket(s); fail(L"O técnico não respondeu."); return;
+    }
+    // Valida senha: o viewer manda o session code de volta
+    bool passOk=(g_sessionPass==crd.password)||(!g_defaultPass.empty()&&g_defaultPass==crd.password);
+    PacketHeader resp={passOk?PacketType::CONNECT_ACCEPT:PacketType::CONNECT_DENY,0};
+    send(s,(char*)&resp,sizeof(resp),0);
+    if(!passOk){closesocket(s);fail(L"Autenticação falhou.");return;}
+
+    DWORD noTo=0; setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(char*)&noTo,sizeof(noTo));
+    setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(char*)&noTo,sizeof(noTo));
+    g_cliSock=s; g_srvConnected=true;
+    PostMessage(g_mainWnd,WM_HOST_STATUS,2,0);
+    HostStreamThread(); // transmite a tela para o técnico
 }
 
 // ─── Firewall: abre porta 7890 para conexões de entrada ──────────────────────
@@ -1378,6 +1470,35 @@ static void DoUninstallService() {
         L"Remover o serviço do sistema (requer conta de administrador).",
         L"Serviço removido com sucesso.");
 }
+static void DoCallTech() {
+    if(g_srvConnected){
+        MessageBoxW(g_mainWnd,L"Já existe uma sessão ativa.",L"Umbrela Viewer",MB_OK|MB_ICONINFORMATION);
+        return;
+    }
+    // Dialog para digitar o IP do técnico
+    HWND dlg = CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,
+        "ARDlg",nullptr,WS_POPUP|WS_VISIBLE|WS_CAPTION,0,0,340,150,g_mainWnd,nullptr,g_hInst,nullptr);
+    SetWindowTextW(dlg,L"Solicitar Suporte");
+    auto mkc=[&](LPCSTR cls,LPCSTR txt,DWORD st,int x,int y,int w,int h,int id){
+        return CreateWindowExA(0,cls,txt,WS_CHILD|WS_VISIBLE|st,x,y,w,h,dlg,(HMENU)(intptr_t)id,g_hInst,nullptr);};
+    RECT pr; GetWindowRect(g_mainWnd,&pr);
+    SetWindowPos(dlg,HWND_TOP,pr.left+100,pr.top+100,340,150,SWP_NOSIZE);
+    mkc("STATIC","IP do técnico de suporte:",SS_LEFT,10,14,300,18,0);
+    HWND editIP=mkc("EDIT","",WS_BORDER|ES_AUTOHSCROLL,10,34,240,24,101);
+    mkc("STATIC","Porta: 7890",SS_LEFT,260,38,70,18,0);
+    mkc("STATIC","O técnico deve ter o Umbrela Viewer aberto.",SS_LEFT,10,64,310,18,0);
+    mkc("BUTTON","Cancelar",BS_PUSHBUTTON,120,98,90,26,IDCANCEL);
+    mkc("BUTTON","Conectar →",BS_DEFPUSHBUTTON,220,98,100,26,IDOK);
+    memset(g_dlgPassBuf,0,sizeof(g_dlgPassBuf));
+    g_activeDlgEdit=editIP; g_activeDlgUser=nullptr; SetFocus(editIP);
+    RunDlgLoop(dlg,editIP,g_mainWnd);
+    if(g_dlgResultCode!=IDOK) return;
+    char ip[128]={};
+    GetWindowTextA(editIP,ip,sizeof(ip)-1);
+    if(!ip[0]) return;
+    std::string techIP=ip;
+    std::thread([techIP]{ HostCallViewerThread(techIP); }).detach();
+}
 static void DoOpenFirewallPort() {
     ShowAdminCredAndRun(g_mainWnd,
         "/add-firewall",
@@ -1620,6 +1741,24 @@ static void PaintMain(HWND hw, HDC hdc){
                 g.DrawString(L"↗ Compartilhar",-1,&fntTiny,Gdiplus::PointF(shX+6.f,btnY+5.f),&shTxt);
                 VBAdd(VB_SHARE,(int)shX,(int)btnY,88,24);
             }
+        }
+
+        // ── "Solicitar Suporte" button ───────────────────────────────────
+        if(!g_srvConnected) {
+            bool ctHot=(g_hotBtn==VB_CALL_TECH);
+            float ctY=cY+cH-60.f, ctW=200.f, ctX=cX+cW-ctW-12.f;
+            Gdiplus::Color ct1=ctHot?Gdiplus::Color(255,5,150,105):Gdiplus::Color(200,4,120,87);
+            Gdiplus::Color ct2=ctHot?Gdiplus::Color(255,16,185,129):Gdiplus::Color(180,10,150,100);
+            Gdiplus::LinearGradientBrush ctGr(
+                Gdiplus::PointF(ctX,ctY),Gdiplus::PointF(ctX+ctW,ctY+24.f),ct1,ct2);
+            FillRR(g,ctX,ctY,ctW,24.f,8.f,ctGr);
+            Gdiplus::SolidBrush ctTxt(C::TEXT);
+            Gdiplus::StringFormat sfCT;
+            sfCT.SetAlignment(Gdiplus::StringAlignmentCenter);
+            sfCT.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            g.DrawString(L"📞 Solicitar Suporte",-1,&fntSm,
+                Gdiplus::RectF(ctX,ctY,ctW,24.f),&sfCT,&ctTxt);
+            VBAdd(VB_CALL_TECH,(int)ctX,(int)ctY,(int)ctW,24);
         }
 
         // Status row
@@ -2142,7 +2281,8 @@ static LRESULT CALLBACK MainWndProc(HWND hw,UINT msg,WPARAM wp,LPARAM lp){
                 if(IsServiceInstalled()) DoUninstallService();
                 else DoInstallService();
                 break;
-            case VB_OPEN_PORT: DoOpenFirewallPort(); break;
+            case VB_OPEN_PORT:  DoOpenFirewallPort(); break;
+            case VB_CALL_TECH:  DoCallTech(); break;
             case VB_TAB_HOME:
                 g_activeTab=0; InvalidateRect(hw,nullptr,FALSE); break;
             case VB_TAB_RECENT:

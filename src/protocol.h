@@ -21,6 +21,13 @@ enum class PacketType : uint32_t {
     CONNECT_BUSY     = 16,
     PING             = 17,
     PONG             = 18,
+    HOST_HELLO       = 19,  // host → viewer (conexão reversa): identifica papel e session code
+};
+
+// Enviado pelo HOST quando ele conecta SAINDO para o viewer (modo reverso).
+// O viewer responde com CONNECT_REQUEST usando o sessionCode como senha.
+struct HostHelloData {
+    char sessionCode[8];  // session code do host (null-terminated, max 7 chars)
 };
 
 struct PacketHeader {
